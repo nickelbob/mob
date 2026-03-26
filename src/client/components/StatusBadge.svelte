@@ -6,7 +6,7 @@
     launching: 'Starting',
     running: 'Running',
     idle: 'Idle',
-    waiting: 'Waiting',
+    waiting: 'Needs Input',
     stopped: 'Stopped',
     stale: 'Stale',
   };
@@ -40,8 +40,11 @@
   .idle { color: var(--accent); background: rgba(88, 166, 255, 0.1); }
   .idle::before { background: var(--accent); }
 
-  .waiting { color: var(--yellow); background: rgba(210, 153, 34, 0.1); }
-  .waiting::before { background: var(--yellow); }
+  .waiting { color: var(--yellow); background: rgba(210, 153, 34, 0.15); }
+  .waiting::before {
+    background: var(--yellow);
+    animation: pulse 1s ease-in-out infinite;
+  }
 
   .stopped { color: var(--text-muted); background: rgba(72, 79, 88, 0.1); }
   .stopped::before { background: var(--text-muted); }

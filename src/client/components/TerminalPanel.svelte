@@ -195,6 +195,11 @@
           <span class="spinner"></span>
           Starting Claude...
         </div>
+      {:else if $selectedInstance.state === 'waiting'}
+        <div class="waiting-banner">
+          <span class="pulse-dot"></span>
+          Waiting for your input
+        </div>
       {/if}
       <div class="terminal-container" bind:this={terminalEl}></div>
     {:else}
@@ -234,6 +239,33 @@
     flex-direction: column;
     background: var(--bg-primary);
     overflow: hidden;
+  }
+
+  .waiting-banner {
+    padding: 6px 12px;
+    background: rgba(210, 153, 34, 0.15);
+    border-bottom: 1px solid rgba(210, 153, 34, 0.3);
+    color: var(--yellow);
+    font-size: 12px;
+    text-align: center;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .pulse-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--yellow);
+    animation: pulse 1s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
   }
 
   .stopped-banner {

@@ -312,7 +312,18 @@ export class InstanceManager extends EventEmitter {
     this.staleTimer = setInterval(() => {
       const now = Date.now();
       for (const [id, info] of this.instances) {
-        if (info.state !== 'stopped' && info.state !== 'stale' && info.state !== 'launching') {
+        if (info.state === 'stopped') continue;
+
+        // Refresh git branch for active managed instances
+        if (this.managedIds.has(id) && info.state !== 'launching') {
+          const branch = getGitBranch(info.cwd);
+          if (branch && branch !== info.gitBranch) {
+            info.gitBranch = branch;
+            this.emit('update', info);
+          }
+        }
+
+        if (info.state !== 'stale' && info.state !== 'launching') {
           if (now - info.lastUpdated > STALE_THRESHOLD_MS) {
             info.state = 'stale';
             this.emit('update', info);

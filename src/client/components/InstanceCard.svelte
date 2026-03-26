@@ -7,6 +7,7 @@
   export let instance: InstanceInfo;
 
   $: selected = $selectedInstanceId === instance.id;
+  $: needsInput = instance.state === 'waiting';
 
   function select() {
     selectedInstanceId.set(instance.id);
@@ -36,7 +37,7 @@
   }
 </script>
 
-<div class="card" class:selected on:click={select} on:mousedown|preventDefault role="button" tabindex="-1" on:keypress={select}>
+<div class="card" class:selected class:needs-input={needsInput} on:click={select} on:mousedown|preventDefault role="button" tabindex="-1" on:keypress={select}>
   <div class="card-header">
     <span class="name">{instance.name}</span>
     <StatusBadge state={instance.state} />
@@ -95,6 +96,16 @@
   .card.selected {
     border-color: var(--accent);
     background: rgba(88, 166, 255, 0.05);
+  }
+
+  .card.needs-input {
+    border-left: 3px solid var(--yellow);
+    animation: attention 2s ease-in-out infinite;
+  }
+
+  @keyframes attention {
+    0%, 100% { border-left-color: var(--yellow); }
+    50% { border-left-color: transparent; }
   }
 
   .card-header {
