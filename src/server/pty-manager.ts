@@ -33,6 +33,7 @@ export class PtyManager extends EventEmitter {
     model?: string;
     permissionMode?: string;
     claudeSessionId?: string;
+    resume?: boolean;
   }): IPty {
     const shell = getDefaultShell();
     const args = getShellArgs(shell);
@@ -77,7 +78,10 @@ export class PtyManager extends EventEmitter {
       let cmd = 'claude';
       if (opts?.claudeSessionId) {
         cmd += ` --resume ${opts.claudeSessionId}`;
-      } else {
+      } else if (opts?.resume) {
+        cmd += ' --continue';
+      }
+      if (!opts?.claudeSessionId && !opts?.resume) {
         cmd += ` --name mob-${instanceId}`;
       }
       if (opts?.model) cmd += ` --model ${opts.model}`;

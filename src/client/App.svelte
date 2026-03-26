@@ -2,7 +2,19 @@
   import Dashboard from './components/Dashboard.svelte';
   import LaunchDialog from './components/LaunchDialog.svelte';
   import { showLaunchDialog, wsConnected } from './lib/stores.js';
+
+  const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+
+  function handleKeydown(e: KeyboardEvent) {
+    const mod = isMac ? e.metaKey : e.ctrlKey;
+    if (mod && e.key === 'l') {
+      e.preventDefault();
+      showLaunchDialog.set(true);
+    }
+  }
 </script>
+
+<svelte:window on:keydown={handleKeydown} />
 
 <main>
   <header>
@@ -15,7 +27,7 @@
         {$wsConnected ? 'Connected' : 'Disconnected'}
       </span>
       <button class="launch-btn" on:click={() => showLaunchDialog.set(true)}>
-        + Launch Instance
+        + Launch Instance <kbd>{isMac ? '⌘' : 'Ctrl+'}L</kbd>
       </button>
     </div>
   </header>
@@ -103,5 +115,12 @@
 
   .launch-btn:hover {
     background: var(--accent-hover);
+  }
+
+  .launch-btn kbd {
+    font-family: inherit;
+    font-size: 11px;
+    opacity: 0.7;
+    margin-left: 4px;
   }
 </style>

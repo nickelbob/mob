@@ -175,7 +175,8 @@ export class InstanceManager extends EventEmitter {
 
     const newId = generateInstanceId();
     const now = Date.now();
-    const resumeId = old.claudeSessionId || `mob-${instanceId}`;
+    // Only use --resume with a real session ID from hooks; otherwise use --continue
+    const resumeId = old.claudeSessionId || undefined;
 
     const info: InstanceInfo = {
       id: newId,
@@ -200,6 +201,7 @@ export class InstanceManager extends EventEmitter {
         model: old.model,
         permissionMode: old.permissionMode,
         claudeSessionId: resumeId,
+        resume: true,
       });
     } catch (err) {
       info.state = 'stopped';
@@ -211,9 +213,11 @@ export class InstanceManager extends EventEmitter {
     this.sessionStore.save(info);
     this.scheduleLaunchTransition(newId);
 
-    // Remove the old stopped instance from the list
+    // Remove the old stopped instance from the list and disk
     this.instances.delete(instanceId);
     this.managedIds.delete(instanceId);
+    this.sessionStore.remove(instanceId);
+    this.scrollbackBuffer.remove(instanceId);
     this.emit('remove', instanceId);
 
     return info;
@@ -241,11 +245,14 @@ export class InstanceManager extends EventEmitter {
 
   handleHookUpdate(data: InstanceStatusFile): void {
     const existing = this.instances.get(data.id);
-    // Auto-name: if the instance has autoName enabled and hook provides a subtask, use it
+    // Auto-name: use topic (first user prompt) or subtask from hook data
     let name = existing?.name || data.id;
-    if (this.autoNameIds.has(data.id) && data.subtask) {
-      name = data.subtask;
-      this.autoNameIds.delete(data.id);
+    if (this.autoNameIds.has(data.id)) {
+      const autoName = data.topic || data.subtask;
+      if (autoName) {
+        name = autoName;
+        this.autoNameIds.delete(data.id);
+      }
     }
 
     // Capture claude session ID from hook data

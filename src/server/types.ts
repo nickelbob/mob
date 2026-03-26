@@ -19,6 +19,7 @@ export interface InstanceStatusFile {
   state: InstanceState;
   ticket?: string;
   subtask?: string;
+  topic?: string;
   progress?: number;
   currentTool?: string;
   lastUpdated: number;

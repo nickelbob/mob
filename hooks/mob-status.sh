@@ -49,6 +49,19 @@ case "$HOOK_EVENT" in
   *)              STATE="running" ;;
 esac
 
+# Extract user prompt from UserPromptSubmit for auto-naming
+TOPIC=""
+if [ "$HOOK_EVENT" = "UserPromptSubmit" ]; then
+  RAW_MSG=$(echo "$INPUT" | jq -r '.message // empty' 2>/dev/null || echo "")
+  if [ -n "$RAW_MSG" ]; then
+    # Truncate to first 80 chars, first line only
+    TOPIC=$(echo "$RAW_MSG" | head -1 | cut -c1-80)
+  fi
+fi
+
+# Extract session_id from hook input
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+
 # Read optional task metadata from .mob-task.json in working directory
 TICKET=""
 SUBTASK=""
@@ -70,10 +83,11 @@ STATUS_JSON=$(cat <<ENDJSON
   "state": "$STATE",
   "ticket": "$TICKET",
   "subtask": "$SUBTASK",
+  "topic": "$TOPIC",
   $([ -n "$PROGRESS" ] && echo "\"progress\": $PROGRESS," || echo "")
   "currentTool": "$TOOL_NAME",
   "lastUpdated": $TIMESTAMP,
-  "sessionId": "$INSTANCE_ID"
+  "sessionId": "${SESSION_ID:-$INSTANCE_ID}"
 }
 ENDJSON
 )

@@ -158,7 +158,18 @@
     }
   });
 
-  $: attachTerminal($selectedInstance);
+  // React to ID changes. Also react to instance managed/state becoming available
+  // (e.g. snapshot arrives after ID was already set).
+  $: {
+    const id = $selectedInstanceId;
+    const inst = $selectedInstance;
+    // Only call attachTerminal when the ID actually changes
+    if (id !== currentSubscription) {
+      attachTerminal(inst);
+    }
+  }
+  // Keep isStopped in sync without re-attaching
+  $: isStopped = $selectedInstance?.state === 'stopped';
 </script>
 
 <div class="terminal-panel">

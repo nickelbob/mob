@@ -66,7 +66,7 @@
   <ProgressBar progress={instance.progress} />
 
   <div class="card-footer">
-    <span class="badge-type">{instance.managed ? 'managed' : 'external'}</span>
+    <span class="badge-type" title={instance.managed ? 'Launched and controlled by mob' : 'Discovered externally via hooks'}>{instance.managed ? 'managed' : 'external'}</span>
     <div class="card-actions">
       {#if instance.managed && instance.state === 'stopped'}
         <button class="resume-btn" on:click={resume} title="Resume session">Resume</button>

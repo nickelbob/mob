@@ -52,19 +52,29 @@ function main(): void {
       settings.hooks[event] = [];
     }
 
-    // Check if mob hook already exists
-    const existing = settings.hooks[event].find(
-      (h: any) => h.type === 'command' && typeof h.command === 'string' && h.command.includes('mob-status')
+    // Check if mob hook already exists (new format: matcher + hooks array)
+    const existingEntry = settings.hooks[event].find(
+      (entry: any) => entry.hooks?.some(
+        (h: any) => h.type === 'command' && typeof h.command === 'string' && h.command.includes('mob-status')
+      )
     );
 
-    if (existing) {
-      // Update existing hook
-      existing.command = hookCommand;
+    // Also check for old format entries and remove them
+    settings.hooks[event] = settings.hooks[event].filter(
+      (entry: any) => !(entry.type === 'command' && typeof entry.command === 'string' && entry.command.includes('mob-status'))
+    );
+
+    if (existingEntry) {
+      // Update existing hook command
+      const hook = existingEntry.hooks.find(
+        (h: any) => h.type === 'command' && h.command.includes('mob-status')
+      );
+      if (hook) hook.command = hookCommand;
     } else {
-      // Add new hook
+      // Add new hook in correct format
       settings.hooks[event].push({
-        type: 'command',
-        command: hookCommand,
+        matcher: '',
+        hooks: [{ type: 'command', command: hookCommand }],
       });
     }
   }
