@@ -10,7 +10,6 @@
   let fitAddon: FitAddon | null = null;
   let currentSubscription: string | null = null;
   let unsubMessage: (() => void) | null = null;
-  let quickInput = '';
   let resizeObserver: ResizeObserver | null = null;
   let inputDisposable: { dispose(): void } | null = null;
 
@@ -24,6 +23,8 @@
         cursorBlink: true,
         fontSize: 13,
         fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
+        allowProposedApi: true,
+        rightClickSelectsWord: true,
         theme: {
           background: '#0d1117',
           foreground: '#e6edf3',
@@ -109,21 +110,33 @@
       });
     }
 
+    // Handle keyboard shortcuts
+    terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      // Let Alt combos bubble to App.svelte for session switching
+      if (e.altKey) return false;
+      // Let Ctrl+number bubble for session jumping
+      if (e.ctrlKey && e.key >= '1' && e.key <= '9') return false;
+      if (e.ctrlKey && e.key === 'c' && terminal!.hasSelection()) {
+        navigator.clipboard.writeText(terminal!.getSelection());
+        return false;
+      }
+      if (e.ctrlKey && e.key === 'v') {
+        navigator.clipboard.readText().then((text) => {
+          if (text && !isStopped) {
+            wsClient.send({ type: 'terminal:input', payload: { instanceId: inst.id, data: text } });
+          }
+        });
+        return false;
+      }
+      return true;
+    });
+
     // Forward input (only for active instances)
     inputDisposable = terminal.onData((data) => {
       if (!isStopped) {
         wsClient.send({ type: 'terminal:input', payload: { instanceId: inst.id, data } });
       }
     });
-  }
-
-  function handleQuickSend() {
-    if (!quickInput.trim() || !$selectedInstanceId) return;
-    wsClient.send({
-      type: 'terminal:input',
-      payload: { instanceId: $selectedInstanceId, data: quickInput + '\r' },
-    });
-    quickInput = '';
   }
 
   onMount(() => {
@@ -182,16 +195,6 @@
           <span class="spinner"></span>
           Starting Claude...
         </div>
-      {:else}
-        <div class="quick-input">
-          <input
-            type="text"
-            bind:value={quickInput}
-            on:keydown={(e) => e.key === 'Enter' && handleQuickSend()}
-            placeholder="Quick send to Claude..."
-          />
-          <button on:click={handleQuickSend}>Send</button>
-        </div>
       {/if}
       <div class="terminal-container" bind:this={terminalEl}></div>
     {:else}
@@ -231,32 +234,6 @@
     flex-direction: column;
     background: var(--bg-primary);
     overflow: hidden;
-  }
-
-  .quick-input {
-    display: flex;
-    gap: 8px;
-    padding: 8px 12px;
-    background: var(--bg-secondary);
-    border-bottom: 1px solid var(--border);
-  }
-
-  .quick-input input {
-    flex: 1;
-    font-size: 13px;
-  }
-
-  .quick-input button {
-    background: var(--accent);
-    color: #fff;
-    padding: 4px 12px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .quick-input button:hover {
-    background: var(--accent-hover);
   }
 
   .stopped-banner {

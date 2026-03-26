@@ -38,6 +38,13 @@ $State = switch ($Data.event) {
 
 $ToolName = if ($Data.tool_name) { $Data.tool_name } else { "" }
 
+# Extract user prompt from UserPromptSubmit for auto-naming
+$Topic = ""
+if ($Data.event -eq "UserPromptSubmit" -and $Data.message) {
+    $Topic = ($Data.message -split "`n")[0]
+    if ($Topic.Length -gt 80) { $Topic = $Topic.Substring(0, 80) }
+}
+
 # Task metadata
 $Ticket = ""
 $Subtask = ""
@@ -62,6 +69,7 @@ $Status = @{
     currentTool = $ToolName
     lastUpdated = $Timestamp
     sessionId = $InstanceId
+    topic = $Topic
 }
 if ($null -ne $Progress) { $Status.progress = $Progress }
 

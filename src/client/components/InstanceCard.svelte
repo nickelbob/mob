@@ -36,7 +36,7 @@
   }
 </script>
 
-<div class="card" class:selected on:click={select} role="button" tabindex="0" on:keypress={select}>
+<div class="card" class:selected on:click={select} on:mousedown|preventDefault role="button" tabindex="-1" on:keypress={select}>
   <div class="card-header">
     <span class="name">{instance.name}</span>
     <StatusBadge state={instance.state} />

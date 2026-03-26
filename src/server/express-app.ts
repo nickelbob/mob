@@ -1,5 +1,7 @@
 import express from 'express';
+import { exec, execFile } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { InstanceManager } from './instance-manager.js';
@@ -62,6 +64,52 @@ export function createApp(instanceManager: InstanceManager): express.Application
     } catch {
       res.json([]);
     }
+  });
+
+  // Browse for directory — opens native folder picker
+  app.post('/api/browse-dir', (req, res) => {
+    const startDir = (req.body?.startDir as string) || process.env.HOME || 'C:\\';
+    const expanded = startDir.startsWith('~')
+      ? path.join(process.env.HOME || 'C:\\', startDir.slice(1))
+      : startDir;
+
+    log('browse-dir requested, startDir:', expanded);
+
+    if (process.platform === 'win32') {
+      const psPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      const scriptPath = path.join(__dirname, '..', '..', 'scripts', 'browse-dir.ps1');
+      execFile(psPath, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-StartPath', expanded], { timeout: 60000, windowsHide: false, detached: true }, (err, stdout, stderr) => {
+        if (err) {
+          log('browse-dir error:', err.message, stderr);
+          res.json({ cancelled: true });
+          return;
+        }
+        const selected = stdout.trim();
+        log('browse-dir result:', selected || '(cancelled)');
+        if (selected) {
+          res.json({ path: selected });
+        } else {
+          res.json({ cancelled: true });
+        }
+      });
+    } else if (process.platform === 'darwin') {
+      execFile('osascript', ['-e', `choose folder with prompt "Select working directory" default location POSIX file "${expanded}"`], { timeout: 60000 }, (err, stdout) => {
+        if (err) { res.json({ cancelled: true }); return; }
+        const alias = stdout.trim();
+        const posix = alias.replace(/^alias [^:]+:/, '/').replace(/:/g, '/');
+        res.json({ path: posix });
+      });
+    } else {
+      execFile('zenity', ['--file-selection', '--directory', `--filename=${expanded}/`], { timeout: 60000 }, (err, stdout) => {
+        if (err) { res.json({ cancelled: true }); return; }
+        res.json({ path: stdout.trim() });
+      });
+    }
+  });
+
+  // Platform info for client feature detection
+  app.get('/api/platform', (_req, res) => {
+    res.json({ platform: process.platform });
   });
 
   // Hook endpoint — receives status updates from hook scripts

@@ -99,6 +99,31 @@
     showSuggestions = false;
   }
 
+  let browsing = false;
+  let canBrowse = false;
+
+  // Hide browse button on Windows (native dialog locks the browser)
+  fetch('/api/platform').then(r => r.json()).then(d => {
+    canBrowse = d.platform !== 'win32';
+  }).catch(() => {});
+
+  async function browseDir() {
+    browsing = true;
+    try {
+      const res = await fetch('/api/browse-dir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startDir: cwd || '~' }),
+      });
+      const data = await res.json();
+      if (data.path) {
+        cwd = data.path;
+        showSuggestions = false;
+      }
+    } catch { /* ignore */ }
+    browsing = false;
+  }
+
   function autofocus(node: HTMLElement) {
     node.focus();
   }
@@ -120,18 +145,31 @@
     <div class="field">
       <label for="cwd">Working Directory *</label>
       <div class="autocomplete-wrap">
-        <input
-          id="cwd"
-          type="text"
-          bind:value={cwd}
-          on:input={onCwdInput}
-          on:keydown={handleCwdKeydown}
-          on:focus={() => { if (suggestions.length) showSuggestions = true; }}
-          on:blur={() => { setTimeout(() => showSuggestions = false, 200); }}
-          placeholder="~/Development/my-project"
-          autocomplete="off"
-          use:autofocus
-        />
+        <div class="input-with-browse">
+          <input
+            id="cwd"
+            type="text"
+            bind:value={cwd}
+            on:input={onCwdInput}
+            on:keydown={handleCwdKeydown}
+            on:focus={() => { if (suggestions.length) showSuggestions = true; }}
+            on:blur={() => { setTimeout(() => showSuggestions = false, 200); }}
+            placeholder="~/Development/my-project"
+            autocomplete="off"
+            use:autofocus
+          />
+          {#if canBrowse}
+            <button class="browse-btn" on:click={browseDir} disabled={browsing} title="Browse for folder">
+              {#if browsing}
+                ...
+              {:else}
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M2 4v8a1 1 0 001 1h10a1 1 0 001-1V6a1 1 0 00-1-1H8L6.5 3.5A1 1 0 005.8 3H3a1 1 0 00-1 1z"/>
+                </svg>
+              {/if}
+            </button>
+          {/if}
+        </div>
         {#if showSuggestions}
           <ul class="suggestions">
             {#each suggestions as s, i}
@@ -247,6 +285,39 @@
 
   .autocomplete-wrap {
     position: relative;
+  }
+
+  .input-with-browse {
+    display: flex;
+    gap: 4px;
+  }
+
+  .input-with-browse input {
+    flex: 1;
+  }
+
+  .browse-btn {
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+    font-size: 14px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .browse-btn:hover:not(:disabled) {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
+
+  .browse-btn:disabled {
+    opacity: 0.5;
+    cursor: wait;
   }
 
   .suggestions {

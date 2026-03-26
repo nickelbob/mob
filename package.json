@@ -8,13 +8,17 @@
     "build": "vite build && tsc -p tsconfig.node.json",
     "start": "node dist/server/index.js",
     "install-hooks": "tsx scripts/install-hooks.ts",
-    "uninstall-hooks": "tsx scripts/uninstall-hooks.ts"
+    "uninstall-hooks": "tsx scripts/uninstall-hooks.ts",
+    "check-native": "node -e \"var ok=true;try{require('@lydell/node-pty-win32-x64/conpty.node')}catch{ok=false;console.error('Missing: @lydell/node-pty-win32-x64')}try{require.resolve('@rollup/rollup-win32-x64-msvc')}catch{ok=false;console.error('Missing: @rollup/rollup-win32-x64-msvc')}if(!ok){console.error('\\nRun: npm i @lydell/node-pty-win32-x64@1.1.0 @rollup/rollup-win32-x64-msvc\\n');process.exit(1)}\"",
+    "predev": "npm run check-native"
   },
   "dependencies": {
+    "@lydell/node-pty": "^1.0.0",
+    "@lydell/node-pty-win32-x64": "^1.1.0",
+    "@rollup/rollup-win32-x64-msvc": "^4.60.0",
     "chokidar": "^4.0.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
-    "@lydell/node-pty": "^1.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

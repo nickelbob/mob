@@ -1,15 +1,56 @@
 <script lang="ts">
   import Dashboard from './components/Dashboard.svelte';
   import LaunchDialog from './components/LaunchDialog.svelte';
-  import { showLaunchDialog, wsConnected } from './lib/stores.js';
+  import { showLaunchDialog, wsConnected, sortedInstances, selectedInstanceId } from './lib/stores.js';
 
   const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
 
+  function cycleInstance(direction: number) {
+    const list = $sortedInstances;
+    if (list.length === 0) return;
+    const currentIndex = list.findIndex(i => i.id === $selectedInstanceId);
+    let next: number;
+    if (currentIndex === -1) {
+      next = 0;
+    } else {
+      next = (currentIndex + direction + list.length) % list.length;
+    }
+    selectedInstanceId.set(list[next].id);
+  }
+
+  function refocusTerminal() {
+    requestAnimationFrame(() => {
+      const el = document.querySelector('.terminal-container textarea') as HTMLElement;
+      el?.focus();
+    });
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     const mod = isMac ? e.metaKey : e.ctrlKey;
-    if (mod && e.key === 'l') {
+    if (e.altKey && e.key === 'n') {
       e.preventDefault();
       showLaunchDialog.set(true);
+    }
+    // Alt+ArrowDown / Alt+ArrowUp to cycle sessions
+    if (e.altKey && e.key === 'ArrowDown') {
+      e.preventDefault();
+      cycleInstance(1);
+      refocusTerminal();
+    }
+    if (e.altKey && e.key === 'ArrowUp') {
+      e.preventDefault();
+      cycleInstance(-1);
+      refocusTerminal();
+    }
+    // Ctrl+1-9 to jump to session by index
+    if (mod && e.key >= '1' && e.key <= '9') {
+      const idx = parseInt(e.key) - 1;
+      const list = $sortedInstances;
+      if (idx < list.length) {
+        e.preventDefault();
+        selectedInstanceId.set(list[idx].id);
+        refocusTerminal();
+      }
     }
   }
 </script>
@@ -27,7 +68,7 @@
         {$wsConnected ? 'Connected' : 'Disconnected'}
       </span>
       <button class="launch-btn" on:click={() => showLaunchDialog.set(true)}>
-        + Launch Instance <kbd>{isMac ? '⌘' : 'Ctrl+'}L</kbd>
+        + Launch Instance <kbd>Alt+N</kbd>
       </button>
     </div>
   </header>
