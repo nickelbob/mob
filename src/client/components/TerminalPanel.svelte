@@ -125,6 +125,8 @@
     }
 
     fitAddon.fit();
+    terminal.scrollToBottom();
+    terminal.focus();
 
     // Subscribe to output (also triggers scrollback for stopped instances)
     wsClient.send({ type: 'terminal:subscribe', payload: { instanceId: inst.id } });
