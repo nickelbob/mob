@@ -6,6 +6,7 @@ import { PtyManager } from './pty-manager.js';
 import { DiscoveryService } from './discovery.js';
 import { SessionStore } from './session-store.js';
 import { ScrollbackBuffer } from './scrollback-buffer.js';
+import { SettingsManager } from './settings-manager.js';
 import { ensureDir, getMobDir, getInstancesDir, getSessionsDir, getScrollbackDir } from './util/platform.js';
 import { DEFAULT_PORT } from '../shared/constants.js';
 
@@ -18,6 +19,7 @@ ensureDir(getInstancesDir());
 ensureDir(getSessionsDir());
 ensureDir(getScrollbackDir());
 
+const settingsManager = new SettingsManager();
 const ptyManager = new PtyManager();
 const discovery = new DiscoveryService();
 const sessionStore = new SessionStore();
@@ -26,9 +28,9 @@ scrollbackBuffer.start();
 
 sessionStore.pruneExpired();
 
-const instanceManager = new InstanceManager(ptyManager, discovery, sessionStore, scrollbackBuffer);
+const instanceManager = new InstanceManager(ptyManager, discovery, sessionStore, scrollbackBuffer, settingsManager);
 
-const app = createApp(instanceManager);
+const app = createApp(instanceManager, settingsManager);
 const server = http.createServer(app);
 createWsServer(server, instanceManager, ptyManager);
 

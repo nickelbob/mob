@@ -72,10 +72,12 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo ""
 TICKET=""
 SUBTASK=""
 PROGRESS=""
+TICKET_STATUS=""
 if [ -f "$CWD/.mob-task.json" ]; then
   TICKET=$(jq -r '.ticket // empty' "$CWD/.mob-task.json" 2>/dev/null || echo "")
   SUBTASK=$(jq -r '.subtask // empty' "$CWD/.mob-task.json" 2>/dev/null || echo "")
   PROGRESS=$(jq -r '.progress // empty' "$CWD/.mob-task.json" 2>/dev/null || echo "")
+  TICKET_STATUS=$(jq -r '.ticketStatus // empty' "$CWD/.mob-task.json" 2>/dev/null || echo "")
 fi
 
 TIMESTAMP=$(date +%s)000
@@ -88,6 +90,7 @@ STATUS_JSON=$(cat <<ENDJSON
   "gitBranch": "$GIT_BRANCH",
   "state": "$STATE",
   "ticket": "$TICKET",
+  "ticketStatus": "$TICKET_STATUS",
   "subtask": "$SUBTASK",
   "topic": "$TOPIC",
   $([ -n "$PROGRESS" ] && echo "\"progress\": $PROGRESS," || echo "")

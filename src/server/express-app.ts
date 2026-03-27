@@ -5,13 +5,14 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { InstanceManager } from './instance-manager.js';
+import type { SettingsManager } from './settings-manager.js';
 import { isPathWithinHome, shellQuote, validateHookPayload } from './util/sanitize.js';
 import { createLogger } from './util/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const log = createLogger('http');
 
-export function createApp(instanceManager: InstanceManager): express.Application {
+export function createApp(instanceManager: InstanceManager, settingsManager: SettingsManager): express.Application {
   const app = express();
   app.use(express.json());
 
@@ -95,7 +96,7 @@ export function createApp(instanceManager: InstanceManager): express.Application
     if (process.platform === 'win32') {
       const psPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
       const scriptPath = path.join(__dirname, '..', '..', 'scripts', 'browse-dir.ps1');
-      execFile(psPath, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-StartPath', expanded], { timeout: 60000, windowsHide: false, detached: true }, (err, stdout, stderr) => {
+      execFile(psPath, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-StartPath', expanded], { timeout: 60000, windowsHide: false } as any, (err: any, stdout: string, stderr: string) => {
         if (err) {
           log.error('browse-dir error:', err.message, stderr);
           res.json({ cancelled: true });
@@ -129,6 +130,21 @@ export function createApp(instanceManager: InstanceManager): express.Application
   // Platform info for client feature detection
   app.get('/api/platform', (_req, res) => {
     res.json({ platform: process.platform });
+  });
+
+  // Settings API
+  app.get('/api/settings', (_req, res) => {
+    res.json(settingsManager.getRedacted());
+  });
+
+  app.put('/api/settings', (req, res) => {
+    try {
+      settingsManager.update(req.body);
+      instanceManager.refreshTicketFields();
+      res.json(settingsManager.getRedacted());
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Invalid settings' });
+    }
   });
 
   // Hook endpoint — receives status updates from hook scripts

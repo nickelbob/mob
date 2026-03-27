@@ -1,7 +1,9 @@
 <script lang="ts">
   import Dashboard from './components/Dashboard.svelte';
   import LaunchDialog from './components/LaunchDialog.svelte';
-  import { showLaunchDialog, wsConnected, sortedInstances, selectedInstanceId, sidebarCollapsed, errors } from './lib/stores.js';
+  import SettingsDialog from './components/SettingsDialog.svelte';
+  import { showLaunchDialog, showSettingsDialog, wsConnected, sortedInstances, selectedInstanceId, selectedInstance, sidebarCollapsed, errors, settings, wsClient } from './lib/stores.js';
+  import { matchesShortcut, formatShortcut } from './lib/shortcuts.js';
 
   const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
 
@@ -34,34 +36,43 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    const mod = isMac ? e.metaKey : e.ctrlKey;
-    if (e.altKey && e.code === 'KeyN') {
+    const s = $settings.shortcuts;
+    if (matchesShortcut(e, s.launchDialog, isMac)) {
       e.preventDefault();
       showLaunchDialog.set(true);
     }
-    if (e.altKey && e.code === 'KeyB') {
+    if (matchesShortcut(e, s.toggleSidebar, isMac)) {
       e.preventDefault();
       sidebarCollapsed.update(v => !v);
     }
-    // Alt+ArrowDown / Alt+ArrowUp to cycle sessions
-    if (e.altKey && e.key === 'ArrowDown') {
+    if (matchesShortcut(e, s.cycleInstanceDown, isMac)) {
       e.preventDefault();
       cycleInstance(1);
       refocusTerminal();
     }
-    if (e.altKey && e.key === 'ArrowUp') {
+    if (matchesShortcut(e, s.cycleInstanceUp, isMac)) {
       e.preventDefault();
       cycleInstance(-1);
       refocusTerminal();
     }
-    // Ctrl+1-9 to jump to session by index
-    if (mod && e.key >= '1' && e.key <= '9') {
-      const idx = parseInt(e.key) - 1;
-      const list = $sortedInstances;
-      if (idx < list.length) {
-        e.preventDefault();
-        selectedInstanceId.set(list[idx].id);
-        refocusTerminal();
+    if (matchesShortcut(e, s.resumeInstance, isMac)) {
+      e.preventDefault();
+      const inst = $selectedInstance;
+      if (inst && inst.managed && inst.state === 'stopped') {
+        wsClient.send({ type: 'resume', payload: { instanceId: inst.id } });
+      }
+    }
+    // Jump to instance 1-9
+    for (let i = 1; i <= 9; i++) {
+      const key = `jumpToInstance${i}` as keyof typeof s;
+      if (matchesShortcut(e, s[key], isMac)) {
+        const list = $sortedInstances;
+        if (i - 1 < list.length) {
+          e.preventDefault();
+          selectedInstanceId.set(list[i - 1].id);
+          refocusTerminal();
+        }
+        break;
       }
     }
   }
@@ -79,14 +90,23 @@
       <span class="connection-status" class:connected={$wsConnected}>
         {$wsConnected ? 'Connected' : 'Disconnected'}
       </span>
+      <button class="settings-btn" on:click={() => showSettingsDialog.set(true)} title="Settings">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="8" cy="8" r="2.5"/>
+          <path d="M13.5 8a5.5 5.5 0 00-.1-.8l1.3-1-.7-1.2-1.5.5a5.5 5.5 0 00-1.2-.7L11 3.3h-1.4l-.3 1.5a5.5 5.5 0 00-1.2.7l-1.5-.5-.7 1.2 1.3 1a5.5 5.5 0 000 1.6l-1.3 1 .7 1.2 1.5-.5c.3.3.7.5 1.2.7l.3 1.5H11l.3-1.5c.4-.2.8-.4 1.2-.7l1.5.5.7-1.2-1.3-1a5.5 5.5 0 00.1-.8z"/>
+        </svg>
+      </button>
       <button class="launch-btn" on:click={() => showLaunchDialog.set(true)}>
-        + Launch Instance <kbd>Alt+N</kbd>
+        + Launch Instance <kbd>{formatShortcut($settings.shortcuts.launchDialog, isMac)}</kbd>
       </button>
     </div>
   </header>
   <Dashboard />
   {#if $showLaunchDialog}
     <LaunchDialog />
+  {/if}
+  {#if $showSettingsDialog}
+    <SettingsDialog />
   {/if}
   {#if $errors.length > 0}
     <div class="error-toast-container">
@@ -167,6 +187,24 @@
 
   .connection-status.connected::before {
     background: var(--green);
+  }
+
+  .settings-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 5px 7px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s, border-color 0.15s;
+  }
+
+  .settings-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--text-muted);
   }
 
   .launch-btn {

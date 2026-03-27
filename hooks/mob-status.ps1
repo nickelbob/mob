@@ -87,12 +87,14 @@ if ($HookEvent -eq "UserPromptSubmit" -and $Data.prompt) {
 $Ticket = ""
 $Subtask = ""
 $Progress = $null
+$TicketStatus = ""
 $TaskFile = Join-Path $Cwd ".mob-task.json"
 if (Test-Path $TaskFile) {
     $Task = Get-Content $TaskFile | ConvertFrom-Json
     $Ticket = if ($Task.ticket) { "$($Task.ticket)" } else { "" }
     $Subtask = if ($Task.subtask) { "$($Task.subtask)" } else { "" }
     $Progress = $Task.progress
+    $TicketStatus = if ($Task.ticketStatus) { "$($Task.ticketStatus)" } else { "" }
 }
 
 $Timestamp = [long](Get-Date -UFormat %s) * 1000
@@ -103,6 +105,7 @@ $Status = @{
     gitBranch = "$GitBranch"
     state = "$State"
     ticket = "$Ticket"
+    ticketStatus = "$TicketStatus"
     subtask = "$Subtask"
     currentTool = "$ToolName"
     lastUpdated = $Timestamp

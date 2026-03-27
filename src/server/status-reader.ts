@@ -14,6 +14,7 @@ export function readStatusFile(filePath: string): InstanceStatusFile | null {
       gitBranch: data.gitBranch || undefined,
       state: data.state || 'running',
       ticket: data.ticket || undefined,
+      ticketStatus: data.ticketStatus || undefined,
       subtask: data.subtask || undefined,
       progress: typeof data.progress === 'number' ? data.progress : undefined,
       currentTool: data.currentTool || undefined,

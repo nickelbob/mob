@@ -18,6 +18,7 @@ export interface InstanceStatusFile {
   gitBranch?: string;
   state: InstanceState;
   ticket?: string;
+  ticketStatus?: string;
   subtask?: string;
   topic?: string;
   progress?: number;

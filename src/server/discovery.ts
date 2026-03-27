@@ -7,7 +7,7 @@ import { ensureDir } from './util/platform.js';
 import type { InstanceStatusFile } from './types.js';
 
 export class DiscoveryService extends EventEmitter {
-  private watcher: chokidar.FSWatcher | null = null;
+  private watcher: ReturnType<typeof chokidar.watch> | null = null;
   private dir: string;
 
   constructor() {
@@ -22,9 +22,9 @@ export class DiscoveryService extends EventEmitter {
       awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
     });
 
-    this.watcher.on('add', (fp) => this.handleFileChange(fp));
-    this.watcher.on('change', (fp) => this.handleFileChange(fp));
-    this.watcher.on('unlink', (fp) => {
+    this.watcher.on('add', (fp: string) => this.handleFileChange(fp));
+    this.watcher.on('change', (fp: string) => this.handleFileChange(fp));
+    this.watcher.on('unlink', (fp: string) => {
       const id = path.basename(fp, '.json');
       this.emit('remove', id);
     });

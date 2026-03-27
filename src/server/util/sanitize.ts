@@ -150,6 +150,7 @@ export function validateHookPayload(data: unknown): { valid: true; data: Record<
   if (typeof d.subtask === 'string') d.subtask = stripControlChars(d.subtask).slice(0, 500);
   if (typeof d.topic === 'string') d.topic = stripControlChars(d.topic).slice(0, 500);
   if (typeof d.ticket === 'string') d.ticket = stripControlChars(d.ticket).slice(0, 200);
+  if (typeof d.ticketStatus === 'string') d.ticketStatus = stripControlChars(d.ticketStatus).slice(0, 100);
 
   return { valid: true, data: d };
 }

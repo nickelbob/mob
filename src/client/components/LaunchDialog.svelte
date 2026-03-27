@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { showLaunchDialog, wsClient } from '../lib/stores.js';
+  import { showLaunchDialog, wsClient, settings } from '../lib/stores.js';
+  import { get } from 'svelte/store';
 
+  const launchDefaults = get(settings).launch;
   let name = '';
-  let autoName = true;
-  let cwd = '';
-  let model = '';
-  let permissionMode = '';
+  let autoName = launchDefaults.autoName;
+  let cwd = launchDefaults.cwd;
+  let model = launchDefaults.model;
+  let permissionMode = launchDefaults.permissionMode;
 
   // Autocomplete state
   let suggestions: Array<{ path: string; display: string }> = [];
@@ -104,11 +106,12 @@
   }
 
   function reset() {
+    const defaults = get(settings).launch;
     name = '';
-    autoName = true;
-    cwd = '';
-    model = '';
-    permissionMode = '';
+    autoName = defaults.autoName;
+    cwd = defaults.cwd;
+    model = defaults.model;
+    permissionMode = defaults.permissionMode;
     suggestions = [];
     showSuggestions = false;
   }

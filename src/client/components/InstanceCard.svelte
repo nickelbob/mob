@@ -55,7 +55,17 @@
 
   {#if instance.ticket || instance.subtask}
     <div class="card-task">
-      {#if instance.ticket}<span class="ticket">{instance.ticket}</span>{/if}
+      {#if instance.ticket}
+        {#if instance.ticketUrl}
+          <a class="ticket ticket-link" href={instance.ticketUrl} target="_blank" rel="noopener"
+             on:click|stopPropagation>{instance.ticket}</a>
+        {:else}
+          <span class="ticket">{instance.ticket}</span>
+        {/if}
+        {#if instance.ticketStatus}
+          <span class="ticket-status">{instance.ticketStatus}</span>
+        {/if}
+      {/if}
       {#if instance.subtask}<span class="subtask">{instance.subtask}</span>{/if}
     </div>
   {/if}
@@ -154,6 +164,23 @@
     font-size: 11px;
     color: var(--purple);
     background: rgba(188, 140, 255, 0.1);
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+
+  .ticket-link {
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .ticket-link:hover {
+    text-decoration: underline;
+  }
+
+  .ticket-status {
+    font-size: 10px;
+    color: var(--text-muted);
+    background: rgba(139, 148, 158, 0.15);
     padding: 1px 6px;
     border-radius: 4px;
   }

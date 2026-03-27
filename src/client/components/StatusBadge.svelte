@@ -8,7 +8,6 @@
     idle: 'Idle',
     waiting: 'Needs Input',
     stopped: 'Stopped',
-    stale: 'Stale',
   };
 </script>
 
@@ -48,9 +47,6 @@
 
   .stopped { color: var(--text-muted); background: rgba(72, 79, 88, 0.1); }
   .stopped::before { background: var(--text-muted); }
-
-  .stale { color: var(--orange); background: rgba(209, 134, 22, 0.1); }
-  .stale::before { background: var(--orange); }
 
   .launching { color: var(--yellow); background: rgba(210, 153, 34, 0.1); }
   .launching::before {

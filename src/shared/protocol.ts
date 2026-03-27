@@ -37,6 +37,8 @@ export interface InstanceInfo {
   gitBranch?: string;
   state: InstanceState;
   ticket?: string;
+  ticketUrl?: string;
+  ticketStatus?: string;
   subtask?: string;
   progress?: number;
   currentTool?: string;
@@ -48,6 +50,7 @@ export interface InstanceInfo {
   claudeSessionId?: string;
   previousInstanceId?: string;
   historical?: boolean;
+  lastHookUpdate?: number;
 }
 
-export type InstanceState = 'launching' | 'running' | 'idle' | 'waiting' | 'stopped' | 'stale';
+export type InstanceState = 'launching' | 'running' | 'idle' | 'waiting' | 'stopped';

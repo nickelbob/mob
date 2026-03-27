@@ -5,12 +5,23 @@ import { SessionStore } from './session-store.js';
 import { ScrollbackBuffer } from './scrollback-buffer.js';
 import type { InstanceInfo, InstanceState, LaunchPayload } from '../shared/protocol.js';
 import type { InstanceStatusFile } from './types.js';
+import type { SettingsManager } from './settings-manager.js';
 import { generateInstanceId } from './util/id.js';
-import { STALE_THRESHOLD_MS } from '../shared/constants.js';
+import { STALE_THRESHOLD_MS, HOOK_SILENCE_THRESHOLD_MS } from '../shared/constants.js';
 import { getGitBranch } from './util/platform.js';
+import { fetchJiraStatus } from './jira-client.js';
+import { detectStateFromTerminal } from './terminal-state-detector.js';
 import { createLogger } from './util/logger.js';
 
 const logger = createLogger('instance-mgr');
+
+const JIRA_KEY_RE = /([A-Z][A-Z0-9]+-\d+)/;
+
+function extractJiraKey(branch: string | undefined): string | null {
+  if (!branch) return null;
+  const m = branch.match(JIRA_KEY_RE);
+  return m ? m[1] : null;
+}
 
 export class InstanceManager extends EventEmitter {
   private log = logger;
@@ -18,11 +29,14 @@ export class InstanceManager extends EventEmitter {
   private instances = new Map<string, InstanceInfo>();
   private managedIds = new Set<string>();
   private autoNameIds = new Set<string>();
+  private promptCount = new Map<string, number>();
   private ptyManager: PtyManager;
   private discovery: DiscoveryService;
   private sessionStore: SessionStore;
   private scrollbackBuffer: ScrollbackBuffer;
+  private settingsManager: SettingsManager;
   private staleTimer: ReturnType<typeof setInterval> | null = null;
+  private jiraStatusCache = new Map<string, { status: string; fetchedAt: number }>();
   public subscribers = new Map<string, Set<import('ws').WebSocket>>();
 
   constructor(
@@ -30,12 +44,14 @@ export class InstanceManager extends EventEmitter {
     discovery: DiscoveryService,
     sessionStore: SessionStore,
     scrollbackBuffer: ScrollbackBuffer,
+    settingsManager: SettingsManager,
   ) {
     super();
     this.ptyManager = ptyManager;
     this.discovery = discovery;
     this.sessionStore = sessionStore;
     this.scrollbackBuffer = scrollbackBuffer;
+    this.settingsManager = settingsManager;
     this.setupListeners();
     this.loadPreviousSessions();
   }
@@ -81,6 +97,7 @@ export class InstanceManager extends EventEmitter {
 
     this.ptyManager.on('exit', (instanceId: string, exitCode: number) => {
       const info = this.instances.get(instanceId);
+      this.log.info(`PTY exit event: id=${instanceId} exitCode=${exitCode} name="${info?.name}" state=${info?.state}`);
       if (info) {
         info.state = 'stopped';
         info.stoppedAt = Date.now();
@@ -91,6 +108,64 @@ export class InstanceManager extends EventEmitter {
       }
       this.emit('pty:exit', instanceId, exitCode);
     });
+  }
+
+  /** Compute ticketUrl from a ticket key and current JIRA settings. */
+  private computeTicketUrl(ticket: string | undefined): string | undefined {
+    if (!ticket) return undefined;
+    if (ticket.startsWith('http')) return ticket;
+    const { baseUrl } = this.settingsManager.get().jira;
+    if (baseUrl) {
+      return `${baseUrl}/browse/${ticket}`;
+    }
+    return undefined;
+  }
+
+  /** Apply ticket derivation (from branch), ticketUrl, and ticketStatus to an InstanceInfo. */
+  private applyTicketFields(info: InstanceInfo, explicitTicket?: string, explicitTicketStatus?: string): void {
+    // Derive ticket from branch if not explicitly set
+    if (!info.ticket) {
+      const derived = extractJiraKey(info.gitBranch);
+      if (derived) info.ticket = derived;
+    }
+    info.ticketUrl = this.computeTicketUrl(info.ticket);
+
+    // Use explicit status if provided
+    if (explicitTicketStatus) {
+      info.ticketStatus = explicitTicketStatus;
+    }
+
+    // Schedule async JIRA status fetch if we have a JIRA key and credentials, and no explicit status
+    if (!info.ticketStatus && info.ticket && JIRA_KEY_RE.test(info.ticket)) {
+      const jira = this.settingsManager.get().jira;
+      if (jira.baseUrl && jira.email && jira.apiToken) {
+        this.fetchAndSetJiraStatus(info.id, info.ticket);
+      }
+    }
+  }
+
+  private async fetchAndSetJiraStatus(instanceId: string, ticketKey: string): Promise<void> {
+    // Check cache
+    const cached = this.jiraStatusCache.get(ticketKey);
+    if (cached && Date.now() - cached.fetchedAt < 60_000) {
+      const info = this.instances.get(instanceId);
+      if (info && !info.ticketStatus) {
+        info.ticketStatus = cached.status;
+        this.emit('update', info);
+      }
+      return;
+    }
+
+    const { baseUrl, email, apiToken } = this.settingsManager.get().jira;
+    const status = await fetchJiraStatus(baseUrl, email, apiToken, ticketKey);
+    if (status) {
+      this.jiraStatusCache.set(ticketKey, { status, fetchedAt: Date.now() });
+      const info = this.instances.get(instanceId);
+      if (info) {
+        info.ticketStatus = status;
+        this.emit('update', info);
+      }
+    }
   }
 
   launch(payload: LaunchPayload): InstanceInfo {
@@ -109,6 +184,8 @@ export class InstanceManager extends EventEmitter {
       model: payload.model,
       permissionMode: payload.permissionMode,
     };
+
+    this.applyTicketFields(info);
 
     this.instances.set(id, info);
     this.managedIds.add(id);
@@ -145,8 +222,9 @@ export class InstanceManager extends EventEmitter {
   }
 
   kill(instanceId: string): void {
-    this.ptyManager.kill(instanceId);
     const info = this.instances.get(instanceId);
+    this.log.info(`kill() called: id=${instanceId} name="${info?.name}" trace=${new Error().stack?.split('\n').slice(1, 4).map(s => s.trim()).join(' <- ')}`);
+    this.ptyManager.kill(instanceId);
     if (info) {
       info.state = 'stopped';
       info.stoppedAt = Date.now();
@@ -182,6 +260,13 @@ export class InstanceManager extends EventEmitter {
 
     this.instances.set(newId, info);
     this.managedIds.add(newId);
+    if (this.autoNameIds.has(instanceId)) {
+      this.autoNameIds.add(newId);
+    }
+    const oldPromptCount = this.promptCount.get(instanceId);
+    if (oldPromptCount !== undefined) {
+      this.promptCount.set(newId, oldPromptCount);
+    }
     this.subscribers.set(newId, new Set());
 
     try {
@@ -204,6 +289,8 @@ export class InstanceManager extends EventEmitter {
     // Remove the old stopped instance from the list and disk
     this.instances.delete(instanceId);
     this.managedIds.delete(instanceId);
+    this.autoNameIds.delete(instanceId);
+    this.promptCount.delete(instanceId);
     this.sessionStore.remove(instanceId);
     this.scrollbackBuffer.remove(instanceId);
     this.emit('remove', instanceId);
@@ -232,14 +319,33 @@ export class InstanceManager extends EventEmitter {
   }
 
   handleHookUpdate(data: InstanceStatusFile): void {
+    if (data.state === 'stopped') {
+      this.log.info(`hook update with stopped state: id=${data.id} managed=${this.managedIds.has(data.id)} ptyAlive=${this.ptyManager.has(data.id)}`);
+      // Ignore stopped state from hooks if the PTY is still alive — this happens when
+      // Claude subtasks/subagents end and fire SessionEnd with the parent's instance ID
+      if (this.managedIds.has(data.id) && this.ptyManager.has(data.id)) {
+        this.log.info(`ignoring stopped hook for ${data.id} — PTY still alive (likely subtask exit)`);
+        return;
+      }
+    }
     const existing = this.instances.get(data.id);
-    // Auto-name: use topic (first user prompt) or subtask from hook data
+    // Auto-name: use topic or subtask, refreshing every 5 prompts
     let name = existing?.name || data.id;
     if (this.autoNameIds.has(data.id)) {
-      const autoName = data.topic || data.subtask;
+      const autoName = data.subtask || data.topic;
       if (autoName) {
-        name = autoName;
-        this.autoNameIds.delete(data.id);
+        // Track prompt count — topic is set on UserPromptSubmit events
+        if (data.topic) {
+          const count = (this.promptCount.get(data.id) || 0) + 1;
+          this.promptCount.set(data.id, count);
+          // Rename on first prompt and every 5 prompts after
+          if (count === 1 || count % 5 === 0) {
+            name = autoName;
+          }
+        } else {
+          // subtask update without a prompt — always use it
+          name = autoName;
+        }
       }
     }
 
@@ -262,6 +368,8 @@ export class InstanceManager extends EventEmitter {
       createdAt: existing?.createdAt,
       claudeSessionId,
     };
+    info.lastHookUpdate = Date.now();
+    this.applyTicketFields(info, data.ticket, data.ticketStatus);
     this.instances.set(data.id, info);
     this.emit('update', info);
 
@@ -285,9 +393,11 @@ export class InstanceManager extends EventEmitter {
 
   /** Save all running instances as stopped (for graceful shutdown). */
   saveAllAsStopped(): void {
+    this.log.info(`saveAllAsStopped() called — shutting down`);
     const now = Date.now();
     for (const [id, info] of this.instances) {
       if (this.managedIds.has(id) && info.state !== 'stopped') {
+        this.log.info(`marking stopped for shutdown: id=${id} name="${info.name}"`);
         info.state = 'stopped';
         info.stoppedAt = now;
         info.lastUpdated = now;
@@ -296,29 +406,72 @@ export class InstanceManager extends EventEmitter {
     }
   }
 
+  private staleCheckCycle = 0;
+
   startStaleCheck(): void {
     this.staleTimer = setInterval(() => {
       const now = Date.now();
+      this.staleCheckCycle++;
+
       for (const [id, info] of this.instances) {
         if (info.state === 'stopped') continue;
 
-        // Refresh git branch for active managed instances
+        // Tiered git branch refresh for managed instances
         if (this.managedIds.has(id) && info.state !== 'launching') {
-          const branch = getGitBranch(info.cwd);
-          if (branch && branch !== info.gitBranch) {
-            info.gitBranch = branch;
-            this.emit('update', info);
+          const shouldRefreshGit =
+            info.state === 'running' || info.state === 'waiting'
+              ? true                              // every cycle (10s)
+              : this.staleCheckCycle % 6 === 0;   // idle: every 6th cycle (60s)
+
+          if (shouldRefreshGit) {
+            const branch = getGitBranch(info.cwd);
+            if (branch && branch !== info.gitBranch) {
+              info.gitBranch = branch;
+              this.emit('update', info);
+            }
           }
         }
 
-        if (info.state !== 'stale' && info.state !== 'launching') {
-          if (now - info.lastUpdated > STALE_THRESHOLD_MS) {
-            info.state = 'stale';
+        // Terminal-based state fallback for managed instances
+        if (this.managedIds.has(id)) {
+          const hookSilent = !info.lastHookUpdate || (now - info.lastHookUpdate > HOOK_SILENCE_THRESHOLD_MS);
+
+          // Check if PTY is dead but state isn't stopped
+          if (!this.ptyManager.has(id)) {
+            this.log.info(`stale check: PTY dead for ${id} (${info.name}), marking stopped`);
+            info.state = 'stopped';
+            info.stoppedAt = now;
+            info.lastUpdated = now;
             this.emit('update', info);
+            this.sessionStore.save(info);
+            continue;
+          }
+
+          // If hooks have been silent, try terminal-based detection
+          if (hookSilent) {
+            const tail = this.scrollbackBuffer.getTail(id, 500);
+            const detected = detectStateFromTerminal(tail);
+            if (detected && detected !== info.state) {
+              this.log.info(`terminal fallback: ${id} (${info.name}) ${info.state} → ${detected}`);
+              info.state = detected;
+              info.lastUpdated = now;
+              this.emit('update', info);
+            }
           }
         }
       }
     }, 10_000);
+  }
+
+  /** Recompute ticket URLs for all instances (call after JIRA settings change). */
+  refreshTicketFields(): void {
+    for (const info of this.instances.values()) {
+      const oldUrl = info.ticketUrl;
+      info.ticketUrl = this.computeTicketUrl(info.ticket);
+      if (info.ticketUrl !== oldUrl) {
+        this.emit('update', info);
+      }
+    }
   }
 
   stop(): void {

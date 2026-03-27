@@ -1,12 +1,18 @@
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
 import type { InstanceInfo } from './types.js';
+import type { Settings } from '../../shared/settings.js';
+import { DEFAULT_SETTINGS } from '../../shared/settings.js';
 import { WsClient } from './ws-client.js';
+import { loadSettings } from './settings-client.js';
+import { requestNotificationPermission, checkWaitingNotification, clearInstanceState } from './notifications.js';
 
 export const wsClient = new WsClient();
 export const instances = writable<Map<string, InstanceInfo>>(new Map());
 export const selectedInstanceId = writable<string | null>(null);
 export const wsConnected = writable(false);
 export const showLaunchDialog = writable(false);
+export const showSettingsDialog = writable(false);
+export const settings = writable<Settings>(structuredClone(DEFAULT_SETTINGS));
 export const sidebarCollapsed = writable(false);
 export const errors = writable<Array<{ message: string; context?: string; timestamp: number }>>([]);
 
@@ -48,6 +54,9 @@ wsClient.onMessage((msg) => {
         map.set(msg.payload.id, msg.payload);
         return new Map(map);
       });
+      if (get(settings).general.notifications) {
+        checkWaitingNotification(msg.payload.id, msg.payload.name, msg.payload.state);
+      }
       break;
     case 'instance:remove':
       instances.update((map) => {
@@ -57,6 +66,7 @@ wsClient.onMessage((msg) => {
       selectedInstanceId.update((id) =>
         id === msg.payload.instanceId ? null : id
       );
+      clearInstanceState(msg.payload.instanceId);
       // Notify listeners (e.g., TerminalPanel) for cache cleanup
       for (const handler of instanceRemoveHandlers) {
         handler(msg.payload.instanceId);
@@ -78,3 +88,16 @@ wsClient.onMessage((msg) => {
 
 // Connect on load
 wsClient.connect();
+
+// Load settings from server
+loadSettings()
+  .then((s) => {
+    settings.set(s);
+    sidebarCollapsed.set(s.general.sidebarCollapsed);
+    if (s.general.notifications) {
+      requestNotificationPermission();
+    }
+  })
+  .catch(() => {
+    // Use defaults on failure
+  });

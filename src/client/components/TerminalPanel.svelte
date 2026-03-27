@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { onMount, onDestroy, afterUpdate } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { Terminal } from 'xterm';
   import { FitAddon } from 'xterm-addon-fit';
-  import { selectedInstance, selectedInstanceId, wsClient, wsConnected, onInstanceRemove } from '../lib/stores.js';
+  import { selectedInstance, selectedInstanceId, wsClient, wsConnected, onInstanceRemove, settings } from '../lib/stores.js';
   import type { InstanceInfo } from '../lib/types.js';
 
   let terminalEl: HTMLDivElement;
@@ -16,12 +16,14 @@
   let unsubRemove: (() => void) | null = null;
   let prevConnected = false;
 
+  import { get } from 'svelte/store';
+
   // Cache terminals per instance (with LRU cap)
-  const TERMINAL_CACHE_MAX = 20;
   const terminalCache = new Map<string, { terminal: Terminal; fitAddon: FitAddon }>();
 
   function evictOldestTerminal() {
-    if (terminalCache.size <= TERMINAL_CACHE_MAX) return;
+    const max = get(settings).general.maxCachedTerminals;
+    if (terminalCache.size <= max) return;
     // Map iteration is insertion order — evict first (oldest)
     const firstKey = terminalCache.keys().next().value;
     if (firstKey && firstKey !== currentSubscription) {
@@ -42,9 +44,11 @@
   function getOrCreateTerminal(instanceId: string): { terminal: Terminal; fitAddon: FitAddon } {
     let cached = terminalCache.get(instanceId);
     if (!cached) {
+      const termSettings = get(settings).terminal;
       const t = new Terminal({
         cursorBlink: true,
-        fontSize: 13,
+        fontSize: termSettings.fontSize,
+        cursorStyle: termSettings.cursorStyle,
         fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
         allowProposedApi: true,
         rightClickSelectsWord: true,
@@ -70,7 +74,7 @@
           brightCyan: '#56d364',
           brightWhite: '#f0f6fc',
         },
-        scrollback: 5000,
+        scrollback: termSettings.scrollbackLines,
         convertEol: true,
       });
       const f = new FitAddon();
@@ -218,16 +222,27 @@
 
   // React to ID changes. Also react to instance managed/state becoming available
   // (e.g. snapshot arrives after ID was already set).
+  // Use tick() so the {#if} block renders the terminal-container div before we attach.
   $: {
     const id = $selectedInstanceId;
     const inst = $selectedInstance;
-    // Only call attachTerminal when the ID actually changes
     if (id !== currentSubscription) {
-      attachTerminal(inst);
+      tick().then(() => attachTerminal(inst));
     }
   }
   // Keep isStopped in sync without re-attaching
   $: isStopped = $selectedInstance?.state === 'stopped';
+
+  // Update font size on all cached terminals when settings change
+  $: {
+    const fontSize = $settings.terminal.fontSize;
+    for (const [, cached] of terminalCache) {
+      if (cached.terminal.options.fontSize !== fontSize) {
+        cached.terminal.options.fontSize = fontSize;
+        cached.fitAddon.fit();
+      }
+    }
+  }
 
   // Re-subscribe terminal on WebSocket reconnect
   $: {
