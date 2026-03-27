@@ -8,12 +8,12 @@ import type { InstanceStatusFile } from './types.js';
 import { generateInstanceId } from './util/id.js';
 import { STALE_THRESHOLD_MS } from '../shared/constants.js';
 import { getGitBranch } from './util/platform.js';
+import { createLogger } from './util/logger.js';
+
+const logger = createLogger('instance-mgr');
 
 export class InstanceManager extends EventEmitter {
-  private log(...args: unknown[]) {
-    const ts = new Date().toISOString().slice(11, 23);
-    console.log(`[${ts}] [instance-mgr]`, ...args);
-  }
+  private log = logger;
 
   private instances = new Map<string, InstanceInfo>();
   private managedIds = new Set<string>();
@@ -64,7 +64,7 @@ export class InstanceManager extends EventEmitter {
 
   private setupListeners(): void {
     this.discovery.on('update', (status: InstanceStatusFile) => {
-      this.log(`discovery update: id=${status.id} state=${status.state} topic=${status.topic || '(none)'}`);
+      this.log.info(`discovery update: id=${status.id} state=${status.state} topic=${status.topic || '(none)'}`);
       this.handleHookUpdate(status);
     });
 

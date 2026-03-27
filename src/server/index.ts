@@ -10,6 +10,7 @@ import { ensureDir, getMobDir, getInstancesDir, getSessionsDir, getScrollbackDir
 import { DEFAULT_PORT } from '../shared/constants.js';
 
 const port = parseInt(process.env.MOB_PORT || '', 10) || DEFAULT_PORT;
+const host = process.env.MOB_HOST || '127.0.0.1';
 
 // Ensure directories exist
 ensureDir(getMobDir());
@@ -34,19 +35,30 @@ createWsServer(server, instanceManager, ptyManager);
 discovery.start();
 instanceManager.startStaleCheck();
 
-server.listen(port, '0.0.0.0', () => {
-  console.log(`Mob dashboard running at http://localhost:${port}`);
-  console.log(`WebSocket endpoint: ws://localhost:${port}/mob-ws`);
+server.listen(port, host, () => {
+  console.log(`Mob dashboard running at http://${host}:${port}`);
+  console.log(`WebSocket endpoint: ws://${host}:${port}/mob-ws`);
 });
 
 // Graceful shutdown
 function shutdown() {
   console.log('\nShutting down...');
   instanceManager.saveAllAsStopped();
+
+  // Kill all PTY processes
+  for (const [id] of ptyManager.getAll()) {
+    console.log(`Killing PTY: ${id}`);
+    ptyManager.kill(id);
+  }
+
   scrollbackBuffer.stop();
   instanceManager.stop();
-  server.close();
-  process.exit(0);
+
+  // Brief grace period for clean exit
+  setTimeout(() => {
+    server.close();
+    process.exit(0);
+  }, 500);
 }
 
 process.on('SIGINT', shutdown);

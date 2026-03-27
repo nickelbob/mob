@@ -5,13 +5,11 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { InstanceManager } from './instance-manager.js';
+import { isPathWithinHome, shellQuote, validateHookPayload } from './util/sanitize.js';
+import { createLogger } from './util/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-function log(...args: unknown[]) {
-  const ts = new Date().toISOString().slice(11, 23);
-  console.log(`[${ts}] [http]`, ...args);
-}
+const log = createLogger('http');
 
 export function createApp(instanceManager: InstanceManager): express.Application {
   const app = express();
@@ -19,7 +17,7 @@ export function createApp(instanceManager: InstanceManager): express.Application
 
   // Request logging for API routes
   app.use('/api', (req, _res, next) => {
-    log(`${req.method} ${req.originalUrl}`);
+    log.info(`${req.method} ${req.originalUrl}`);
     next();
   });
 
@@ -32,7 +30,7 @@ export function createApp(instanceManager: InstanceManager): express.Application
     app.use(express.static(clientDir));
   }
 
-  // Directory autocomplete for launch dialog
+  // Directory autocomplete for launch dialog (restricted to home directory)
   app.get('/api/completions/dirs', (req, res) => {
     const partial = (req.query.q as string) || '';
     if (!partial) {
@@ -41,22 +39,35 @@ export function createApp(instanceManager: InstanceManager): express.Application
     }
 
     // Expand ~ to home dir
+    const home = os.homedir();
     const expanded = partial.startsWith('~')
-      ? path.join(process.env.HOME || '/root', partial.slice(1))
+      ? path.join(home, partial.slice(1))
       : partial;
+
+    // Restrict to home directory tree
+    const resolved = path.resolve(expanded);
+    if (!isPathWithinHome(resolved)) {
+      res.json([]);
+      return;
+    }
 
     const dir = expanded.endsWith('/') ? expanded : path.dirname(expanded);
     const prefix = expanded.endsWith('/') ? '' : path.basename(expanded);
 
+    // Verify dir is also within home
+    const resolvedDir = path.resolve(dir);
+    if (!isPathWithinHome(resolvedDir)) {
+      res.json([]);
+      return;
+    }
+
     try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      const entries = fs.readdirSync(resolvedDir, { withFileTypes: true });
       const matches = entries
         .filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name.toLowerCase().startsWith(prefix.toLowerCase()))
         .slice(0, 20)
         .map((e) => {
-          const full = path.join(dir, e.name);
-          // Re-collapse home dir to ~
-          const home = process.env.HOME || '/root';
+          const full = path.join(resolvedDir, e.name);
           const display = full.startsWith(home) ? '~' + full.slice(home.length) : full;
           return { path: full, display: display + '/' };
         });
@@ -73,19 +84,25 @@ export function createApp(instanceManager: InstanceManager): express.Application
       ? path.join(process.env.HOME || 'C:\\', startDir.slice(1))
       : startDir;
 
-    log('browse-dir requested, startDir:', expanded);
+    // Validate path has no null bytes or newlines
+    if (expanded.includes('\0') || expanded.includes('\n') || expanded.includes('\r')) {
+      res.status(400).json({ error: 'Invalid path' });
+      return;
+    }
+
+    log.info('browse-dir requested, startDir:', expanded);
 
     if (process.platform === 'win32') {
       const psPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
       const scriptPath = path.join(__dirname, '..', '..', 'scripts', 'browse-dir.ps1');
       execFile(psPath, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-StartPath', expanded], { timeout: 60000, windowsHide: false, detached: true }, (err, stdout, stderr) => {
         if (err) {
-          log('browse-dir error:', err.message, stderr);
+          log.error('browse-dir error:', err.message, stderr);
           res.json({ cancelled: true });
           return;
         }
         const selected = stdout.trim();
-        log('browse-dir result:', selected || '(cancelled)');
+        log.info('browse-dir result:', selected || '(cancelled)');
         if (selected) {
           res.json({ path: selected });
         } else {
@@ -93,7 +110,9 @@ export function createApp(instanceManager: InstanceManager): express.Application
         }
       });
     } else if (process.platform === 'darwin') {
-      execFile('osascript', ['-e', `choose folder with prompt "Select working directory" default location POSIX file "${expanded}"`], { timeout: 60000 }, (err, stdout) => {
+      // Shell-quote the path within the AppleScript string to prevent injection
+      const escapedPath = expanded.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      execFile('osascript', ['-e', `choose folder with prompt "Select working directory" default location POSIX file "${escapedPath}"`], { timeout: 60000 }, (err, stdout) => {
         if (err) { res.json({ cancelled: true }); return; }
         const alias = stdout.trim();
         const posix = alias.replace(/^alias [^:]+:/, '/').replace(/:/g, '/');
@@ -114,14 +133,15 @@ export function createApp(instanceManager: InstanceManager): express.Application
 
   // Hook endpoint — receives status updates from hook scripts
   app.post('/api/hook', (req, res) => {
-    const data = req.body;
-    if (!data || !data.id) {
-      res.status(400).json({ error: 'Missing instance id' });
+    const result = validateHookPayload(req.body);
+    if (!result.valid) {
+      res.status(400).json({ error: result.error });
       return;
     }
-    log(`hook update: id=${data.id} state=${data.state} topic=${data.topic || '(none)'}`);
+    const data = result.data;
+    log.info(`hook update: id=${data.id} state=${data.state} topic=${(data.topic as string) || '(none)'}`);
     data.lastUpdated = data.lastUpdated || Date.now();
-    instanceManager.handleHookUpdate(data);
+    instanceManager.handleHookUpdate(data as any);
     res.json({ ok: true });
   });
 

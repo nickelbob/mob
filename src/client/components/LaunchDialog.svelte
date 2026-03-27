@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { showLaunchDialog, wsClient } from '../lib/stores.js';
 
   let name = '';
@@ -12,6 +13,7 @@
   let showSuggestions = false;
   let selectedSuggestion = -1;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let abortController: AbortController | null = null;
 
   async function fetchSuggestions(query: string) {
     if (!query || query.length < 2) {
@@ -19,16 +21,28 @@
       showSuggestions = false;
       return;
     }
+    // Abort any in-flight request
+    abortController?.abort();
+    abortController = new AbortController();
     try {
-      const res = await fetch(`/api/completions/dirs?q=${encodeURIComponent(query)}`);
+      const res = await fetch(`/api/completions/dirs?q=${encodeURIComponent(query)}`, {
+        signal: abortController.signal,
+      });
       suggestions = await res.json();
       showSuggestions = suggestions.length > 0;
       selectedSuggestion = -1;
-    } catch {
-      suggestions = [];
-      showSuggestions = false;
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') {
+        suggestions = [];
+        showSuggestions = false;
+      }
     }
   }
+
+  onDestroy(() => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    abortController?.abort();
+  });
 
   function onCwdInput() {
     if (debounceTimer) clearTimeout(debounceTimer);

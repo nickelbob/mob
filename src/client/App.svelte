@@ -1,7 +1,7 @@
 <script lang="ts">
   import Dashboard from './components/Dashboard.svelte';
   import LaunchDialog from './components/LaunchDialog.svelte';
-  import { showLaunchDialog, wsConnected, sortedInstances, selectedInstanceId } from './lib/stores.js';
+  import { showLaunchDialog, wsConnected, sortedInstances, selectedInstanceId, sidebarCollapsed, errors } from './lib/stores.js';
 
   const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
 
@@ -35,9 +35,13 @@
 
   function handleKeydown(e: KeyboardEvent) {
     const mod = isMac ? e.metaKey : e.ctrlKey;
-    if (e.altKey && e.key === 'n') {
+    if (e.altKey && e.code === 'KeyN') {
       e.preventDefault();
       showLaunchDialog.set(true);
+    }
+    if (e.altKey && e.code === 'KeyB') {
+      e.preventDefault();
+      sidebarCollapsed.update(v => !v);
     }
     // Alt+ArrowDown / Alt+ArrowUp to cycle sessions
     if (e.altKey && e.key === 'ArrowDown') {
@@ -83,6 +87,19 @@
   <Dashboard />
   {#if $showLaunchDialog}
     <LaunchDialog />
+  {/if}
+  {#if $errors.length > 0}
+    <div class="error-toast-container">
+      {#each $errors.slice(-3) as err (err.timestamp)}
+        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+        <div class="error-toast" on:click={() => errors.update(e => e.filter(x => x !== err))}>
+          {err.message}
+          {#if err.context}
+            <span class="error-context">{err.context}</span>
+          {/if}
+        </div>
+      {/each}
+    </div>
   {/if}
 </main>
 
@@ -171,5 +188,39 @@
     font-size: 11px;
     opacity: 0.7;
     margin-left: 4px;
+  }
+
+  .error-toast-container {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 400px;
+  }
+
+  .error-toast {
+    background: rgba(248, 81, 73, 0.15);
+    border: 1px solid rgba(248, 81, 73, 0.4);
+    color: var(--red);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    animation: toast-slide-in 0.3s ease;
+  }
+
+  .error-context {
+    display: block;
+    font-size: 11px;
+    opacity: 0.7;
+    margin-top: 4px;
+  }
+
+  @keyframes toast-slide-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 </style>

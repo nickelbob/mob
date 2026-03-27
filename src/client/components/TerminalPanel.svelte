@@ -2,7 +2,7 @@
   import { onMount, onDestroy, afterUpdate } from 'svelte';
   import { Terminal } from 'xterm';
   import { FitAddon } from 'xterm-addon-fit';
-  import { selectedInstance, selectedInstanceId, wsClient } from '../lib/stores.js';
+  import { selectedInstance, selectedInstanceId, wsClient, wsConnected, onInstanceRemove } from '../lib/stores.js';
   import type { InstanceInfo } from '../lib/types.js';
 
   let terminalEl: HTMLDivElement;
@@ -13,9 +13,31 @@
   let resizeObserver: ResizeObserver | null = null;
   let resizeHandler: (() => void) | null = null;
   let inputDisposable: { dispose(): void } | null = null;
+  let unsubRemove: (() => void) | null = null;
+  let prevConnected = false;
 
-  // Cache terminals per instance
+  // Cache terminals per instance (with LRU cap)
+  const TERMINAL_CACHE_MAX = 20;
   const terminalCache = new Map<string, { terminal: Terminal; fitAddon: FitAddon }>();
+
+  function evictOldestTerminal() {
+    if (terminalCache.size <= TERMINAL_CACHE_MAX) return;
+    // Map iteration is insertion order — evict first (oldest)
+    const firstKey = terminalCache.keys().next().value;
+    if (firstKey && firstKey !== currentSubscription) {
+      const entry = terminalCache.get(firstKey);
+      entry?.terminal.dispose();
+      terminalCache.delete(firstKey);
+    }
+  }
+
+  function disposeTerminalCache(instanceId: string) {
+    const cached = terminalCache.get(instanceId);
+    if (cached) {
+      cached.terminal.dispose();
+      terminalCache.delete(instanceId);
+    }
+  }
 
   function getOrCreateTerminal(instanceId: string): { terminal: Terminal; fitAddon: FitAddon } {
     let cached = terminalCache.get(instanceId);
@@ -55,6 +77,7 @@
       t.loadAddon(f);
       cached = { terminal: t, fitAddon: f };
       terminalCache.set(instanceId, cached);
+      evictOldestTerminal();
     }
     return cached;
   }
@@ -163,6 +186,11 @@
     });
     if (terminalEl) resizeObserver.observe(terminalEl);
 
+    // Clean up terminal cache when instances are removed
+    unsubRemove = onInstanceRemove((instanceId) => {
+      disposeTerminalCache(instanceId);
+    });
+
     // Re-fit terminal when window moves between displays with different DPI
     resizeHandler = () => {
       if (fitAddon && terminal) {
@@ -180,6 +208,7 @@
 
   onDestroy(() => {
     unsubMessage?.();
+    unsubRemove?.();
     resizeObserver?.disconnect();
     if (resizeHandler) window.removeEventListener('resize', resizeHandler);
     if (currentSubscription) {
@@ -199,6 +228,15 @@
   }
   // Keep isStopped in sync without re-attaching
   $: isStopped = $selectedInstance?.state === 'stopped';
+
+  // Re-subscribe terminal on WebSocket reconnect
+  $: {
+    const connected = $wsConnected;
+    if (connected && !prevConnected && currentSubscription) {
+      wsClient.send({ type: 'terminal:subscribe', payload: { instanceId: currentSubscription } });
+    }
+    prevConnected = connected;
+  }
 </script>
 
 <div class="terminal-panel">
