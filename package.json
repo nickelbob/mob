@@ -1,5 +1,5 @@
 {
-  "name": "mob-dashboard",
+  "name": "mob-coordinator",
   "version": "0.2.0",
   "description": "Local web dashboard for coordinating multiple Claude Code CLI sessions",
   "type": "module",
