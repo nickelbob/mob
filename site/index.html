@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mob — Coordinate multiple Claude Code sessions</title>
+  <meta name="description" content="Launch, monitor, and switch between Claude Code instances across projects. Open source, runs locally.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>%F0%9F%91%A5</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    /* === CSS Variables (from app.css) === */
+    :root {
+      --bg-primary: #0d1117;
+      --bg-secondary: #161b22;
+      --bg-tertiary: #21262d;
+      --border: #30363d;
+      --text-primary: #e6edf3;
+      --text-secondary: #8b949e;
+      --text-muted: #484f58;
+      --accent: #58a6ff;
+      --accent-hover: #79c0ff;
+      --green: #3fb950;
+      --yellow: #d29922;
+      --red: #f85149;
+      --purple: #bc8cff;
+    }
+
+    /* === Reset === */
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--accent-hover); }
+
+    code, kbd, .mono {
+      font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+    }
+
+    /* === Nav === */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 56px;
+      background: rgba(13, 17, 23, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      z-index: 100;
+    }
+
+    .nav-logo {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.5px;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .nav-links a {
+      font-size: 14px;
+      color: var(--text-secondary);
+      transition: color 0.15s;
+    }
+
+    .nav-links a:hover { color: var(--text-primary); }
+
+    .nav-cta {
+      background: var(--accent) !important;
+      color: #fff !important;
+      padding: 6px 16px;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 13px !important;
+      transition: background 0.15s;
+    }
+
+    .nav-cta:hover { background: var(--accent-hover) !important; }
+
+    /* === Sections === */
+    section {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 80px 24px;
+    }
+
+    .section-label {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+
+    .section-title {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+
+    .section-desc {
+      color: var(--text-secondary);
+      font-size: 16px;
+      max-width: 600px;
+      margin-bottom: 40px;
+    }
+
+    /* === Hero === */
+    .hero {
+      padding-top: 140px;
+      padding-bottom: 60px;
+      text-align: center;
+    }
+
+    .hero h1 {
+      font-size: clamp(32px, 5vw, 52px);
+      font-weight: 700;
+      line-height: 1.15;
+      margin-bottom: 20px;
+      letter-spacing: -1px;
+    }
+
+    .hero h1 .accent { color: var(--accent); }
+
+    .hero .subhead {
+      font-size: clamp(16px, 2.5vw, 20px);
+      color: var(--text-secondary);
+      max-width: 600px;
+      margin: 0 auto 32px;
+      line-height: 1.5;
+    }
+
+    .hero-buttons {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      margin-bottom: 40px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      padding: 10px 24px;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.15s;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .btn-primary:hover { background: var(--accent-hover); color: #fff; }
+
+    .btn-outline {
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+    }
+
+    .btn-outline:hover {
+      border-color: var(--text-muted);
+      color: var(--text-primary);
+    }
+
+    .install-block {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 24px;
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      max-width: 100%;
+    }
+
+    .install-block code {
+      font-size: 14px;
+      color: var(--green);
+      white-space: nowrap;
+    }
+
+    .install-block .prompt {
+      color: var(--text-muted);
+      user-select: none;
+    }
+
+    .copy-btn {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.15s;
+    }
+
+    .copy-btn:hover {
+      background: var(--border);
+      color: var(--text-primary);
+    }
+
+    /* === App Mockup === */
+    .mockup-section {
+      padding-top: 20px;
+      padding-bottom: 80px;
+    }
+
+    .mockup {
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      max-width: 960px;
+      margin: 0 auto;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+    }
+
+    .mockup-header {
+      height: 48px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+    }
+
+    .mockup-logo {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+
+    .mockup-logo-text {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.5px;
+    }
+
+    .mockup-logo-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .mockup-header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .mockup-status {
+      font-size: 12px;
+      color: var(--green);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .mockup-status::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .mockup-launch-btn {
+      background: var(--accent);
+      color: #fff;
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      border: none;
+    }
+
+    .mockup-body {
+      display: flex;
+      min-height: 340px;
+    }
+
+    .mockup-sidebar {
+      width: 300px;
+      border-right: 1px solid var(--border);
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    /* Instance cards in mockup */
+    .m-card {
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-secondary);
+    }
+
+    .m-card.selected {
+      border-color: var(--accent);
+      background: rgba(88, 166, 255, 0.05);
+    }
+
+    .m-card.needs-input {
+      border-left: 3px solid var(--yellow);
+      animation: attention 2s ease-in-out infinite;
+    }
+
+    @keyframes attention {
+      0%, 100% { border-left-color: var(--yellow); }
+      50% { border-left-color: transparent; }
+    }
+
+    .m-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .m-card-name {
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    .m-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .m-badge::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+
+    .m-badge.running { color: var(--green); background: rgba(63, 185, 80, 0.1); }
+    .m-badge.running::before { background: var(--green); }
+
+    .m-badge.waiting { color: var(--yellow); background: rgba(210, 153, 34, 0.15); }
+    .m-badge.waiting::before { background: var(--yellow); animation: pulse 1s ease-in-out infinite; }
+
+    .m-badge.idle { color: var(--accent); background: rgba(88, 166, 255, 0.1); }
+    .m-badge.idle::before { background: var(--accent); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    .m-card-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-bottom: 4px;
+    }
+
+    .m-meta-item {
+      font-size: 11px;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .m-meta-item svg { flex-shrink: 0; }
+
+    .m-card-task {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .m-ticket {
+      font-size: 11px;
+      color: var(--purple);
+      background: rgba(188, 140, 255, 0.1);
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+
+    .m-card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 6px;
+    }
+
+    .m-badge-type {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* Terminal area in mockup */
+    .mockup-terminal {
+      flex: 1;
+      background: var(--bg-primary);
+      padding: 16px;
+      font-family: 'JetBrains Mono', 'SF Mono', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      min-width: 0;
+    }
+
+    .term-prompt {
+      color: var(--accent);
+    }
+
+    .term-command {
+      color: var(--text-primary);
+    }
+
+    .term-output {
+      color: var(--text-secondary);
+    }
+
+    .term-green {
+      color: var(--green);
+    }
+
+    .term-yellow {
+      color: var(--yellow);
+    }
+
+    .term-cursor {
+      display: inline-block;
+      width: 8px;
+      height: 16px;
+      background: var(--text-primary);
+      vertical-align: text-bottom;
+      animation: blink 1s step-end infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+
+    /* === Features Grid === */
+    .features-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .feature-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 24px;
+      transition: border-color 0.15s;
+    }
+
+    .feature-card:hover {
+      border-color: var(--text-muted);
+    }
+
+    .feature-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 14px;
+      font-size: 18px;
+    }
+
+    .feature-card h3 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .feature-card p {
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .icon-green { background: rgba(63, 185, 80, 0.12); color: var(--green); }
+    .icon-yellow { background: rgba(210, 153, 34, 0.12); color: var(--yellow); }
+    .icon-blue { background: rgba(88, 166, 255, 0.12); color: var(--accent); }
+    .icon-purple { background: rgba(188, 140, 255, 0.12); color: var(--purple); }
+    .icon-muted { background: rgba(139, 148, 158, 0.12); color: var(--text-secondary); }
+
+    /* === Keyboard Shortcuts === */
+    .shortcuts-table {
+      width: 100%;
+      border-collapse: collapse;
+      max-width: 600px;
+    }
+
+    .shortcuts-table th {
+      text-align: left;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .shortcuts-table td {
+      padding: 10px 12px;
+      font-size: 14px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-secondary);
+    }
+
+    .shortcuts-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    kbd {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 7px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--text-primary);
+      box-shadow: 0 1px 0 var(--border);
+    }
+
+    .rebindable-note {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 16px;
+      font-style: italic;
+    }
+
+    /* === Quick Start === */
+    .steps {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      max-width: 600px;
+    }
+
+    .step {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .step-num {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: rgba(88, 166, 255, 0.12);
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .step-content h3 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .step-content code {
+      display: inline-block;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 13px;
+      color: var(--green);
+    }
+
+    .step-content p {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+
+    /* === Footer === */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 24px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      margin-bottom: 12px;
+    }
+
+    .footer-links a {
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+
+    /* === Mobile === */
+    @media (max-width: 768px) {
+      nav { padding: 0 16px; }
+
+      .nav-links a:not(.nav-cta) { display: none; }
+
+      section { padding: 60px 16px; }
+
+      .hero { padding-top: 100px; padding-bottom: 40px; }
+
+      .features-grid { grid-template-columns: 1fr; }
+
+      .mockup-body { flex-direction: column; }
+
+      .mockup-sidebar {
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .mockup-terminal { min-height: 200px; }
+
+      .install-block {
+        flex-direction: column;
+        gap: 8px;
+        align-items: flex-start;
+      }
+
+      .install-block code {
+        font-size: 12px;
+        overflow-x: auto;
+        max-width: 100%;
+      }
+    }
+
+    /* Smooth scroll */
+    html { scroll-behavior: smooth; }
+  </style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav>
+  <span class="nav-logo">mob</span>
+  <div class="nav-links">
+    <a href="https://github.com/nickelbob/mob">GitHub</a>
+    <a href="https://www.npmjs.com/package/mob-coordinator">npm</a>
+    <a href="#get-started" class="nav-cta">Get Started</a>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <h1>Coordinate multiple <span class="accent">Claude Code</span> sessions from one tab.</h1>
+  <p class="subhead">Launch, monitor, and switch between Claude instances across projects. Open source, runs locally.</p>
+  <div class="hero-buttons">
+    <a href="#get-started" class="btn btn-primary">Get Started</a>
+    <a href="https://github.com/nickelbob/mob" class="btn btn-outline">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+  </div>
+  <div class="install-block">
+    <code><span class="prompt">$</span> npm install -g mob-coordinator && mob</code>
+    <button class="copy-btn" onclick="navigator.clipboard.writeText('npm install -g mob-coordinator && mob').then(()=>{this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
+  </div>
+</section>
+
+<!-- App Mockup -->
+<section class="mockup-section">
+  <div class="mockup">
+    <div class="mockup-header">
+      <div class="mockup-logo">
+        <span class="mockup-logo-text">mob</span>
+        <span class="mockup-logo-sub">claude coordinator</span>
+      </div>
+      <div class="mockup-header-right">
+        <span class="mockup-status">Connected</span>
+        <span class="mockup-launch-btn">+ Launch Instance</span>
+      </div>
+    </div>
+    <div class="mockup-body">
+      <div class="mockup-sidebar">
+        <!-- Card 1: Running (selected) -->
+        <div class="m-card selected">
+          <div class="m-card-header">
+            <span class="m-card-name">Refactor auth module</span>
+            <span class="m-badge running">Running</span>
+          </div>
+          <div class="m-card-meta">
+            <span class="m-meta-item">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.5 2.5 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25z"/></svg>
+              feature/auth-refactor
+            </span>
+          </div>
+          <div class="m-card-footer">
+            <span class="m-badge-type">managed</span>
+          </div>
+        </div>
+        <!-- Card 2: Needs Input -->
+        <div class="m-card needs-input">
+          <div class="m-card-header">
+            <span class="m-card-name">Fix pagination bug</span>
+            <span class="m-badge waiting">Needs Input</span>
+          </div>
+          <div class="m-card-meta">
+            <span class="m-meta-item">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.5 2.5 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25z"/></svg>
+              fix/pagination
+            </span>
+          </div>
+          <div class="m-card-task">
+            <span class="m-ticket">PROJ-42</span>
+          </div>
+          <div class="m-card-footer">
+            <span class="m-badge-type">managed</span>
+          </div>
+        </div>
+        <!-- Card 3: Idle -->
+        <div class="m-card">
+          <div class="m-card-header">
+            <span class="m-card-name">Update docs</span>
+            <span class="m-badge idle">Idle</span>
+          </div>
+          <div class="m-card-meta">
+            <span class="m-meta-item">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.5 2.5 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25z"/></svg>
+              docs/api-reference
+            </span>
+          </div>
+          <div class="m-card-footer">
+            <span class="m-badge-type">external</span>
+          </div>
+        </div>
+      </div>
+      <!-- Terminal -->
+      <div class="mockup-terminal">
+        <div><span class="term-prompt">claude </span><span class="term-green">&gt;</span> <span class="term-command">Refactoring the authentication module...</span></div>
+        <br>
+        <div><span class="term-output">I'll restructure the auth middleware to use the new session</span></div>
+        <div><span class="term-output">token format. Here's my plan:</span></div>
+        <br>
+        <div><span class="term-output">1. Extract token validation into a standalone module</span></div>
+        <div><span class="term-output">2. Update the session store interface</span></div>
+        <div><span class="term-output">3. Add refresh token rotation</span></div>
+        <br>
+        <div><span class="term-yellow">Reading</span> <span class="term-output">src/auth/middleware.ts</span></div>
+        <div><span class="term-yellow">Editing</span> <span class="term-output">src/auth/token-validator.ts</span></div>
+        <br>
+        <div><span class="term-green">Created</span> <span class="term-output">src/auth/token-validator.ts with validateToken()</span></div>
+        <div><span class="term-output">and refreshTokenRotation() functions.</span></div>
+        <br>
+        <div><span class="term-prompt">claude </span><span class="term-green">&gt;</span> <span class="term-cursor"></span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section>
+  <span class="section-label">Features</span>
+  <h2 class="section-title">Everything you need to manage Claude sessions</h2>
+  <p class="section-desc">A local dashboard purpose-built for running multiple Claude Code instances in parallel.</p>
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="feature-icon icon-green">&#9654;</div>
+      <h3>Live Terminal</h3>
+      <p>Full xterm.js terminal with real-time I/O for each session. Read output, type input, just like a native terminal.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon icon-yellow">&#9679;</div>
+      <h3>Session States</h3>
+      <p>Five distinct states with visual indicators. A pulsing yellow badge tells you instantly when Claude needs your input.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon icon-blue">&#8635;</div>
+      <h3>Session Persistence</h3>
+      <p>Sessions survive page refreshes and reconnects. Auto-resume picks up right where you left off.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon icon-purple">&#9867;</div>
+      <h3>Git + JIRA Integration</h3>
+      <p>Automatic branch tracking and JIRA ticket detection. Clickable status links keep context at your fingertips.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon icon-blue">&#9000;</div>
+      <h3>Keyboard-First</h3>
+      <p>Rebindable shortcuts for everything &mdash; cycle instances, jump to a session by number, launch new instances, all from the keyboard.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon icon-muted">&#10149;</div>
+      <h3>Hook Integration</h3>
+      <p>External Claude Code instances auto-appear in the dashboard via hook scripts. No manual setup required.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Keyboard Shortcuts -->
+<section>
+  <span class="section-label">Shortcuts</span>
+  <h2 class="section-title">Keyboard-first workflow</h2>
+  <p class="section-desc">Navigate everything without leaving the keyboard.</p>
+  <table class="shortcuts-table">
+    <thead>
+      <tr><th>Action</th><th>Shortcut</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Launch new instance</td><td><kbd>Ctrl</kbd> + <kbd>L</kbd></td></tr>
+      <tr><td>Next instance</td><td><kbd>Ctrl</kbd> + <kbd>J</kbd></td></tr>
+      <tr><td>Previous instance</td><td><kbd>Ctrl</kbd> + <kbd>K</kbd></td></tr>
+      <tr><td>Jump to instance 1-9</td><td><kbd>Ctrl</kbd> + <kbd>1</kbd>&ndash;<kbd>9</kbd></td></tr>
+      <tr><td>Toggle sidebar</td><td><kbd>Ctrl</kbd> + <kbd>B</kbd></td></tr>
+      <tr><td>Resume stopped session</td><td><kbd>Ctrl</kbd> + <kbd>R</kbd></td></tr>
+    </tbody>
+  </table>
+  <p class="rebindable-note">All shortcuts are rebindable in Settings.</p>
+</section>
+
+<!-- Quick Start -->
+<section id="get-started">
+  <span class="section-label">Quick Start</span>
+  <h2 class="section-title">Up and running in 30 seconds</h2>
+  <div class="steps">
+    <div class="step">
+      <span class="step-num">1</span>
+      <div class="step-content">
+        <h3>Install</h3>
+        <code>npm install -g mob-coordinator</code>
+      </div>
+    </div>
+    <div class="step">
+      <span class="step-num">2</span>
+      <div class="step-content">
+        <h3>Run</h3>
+        <code>mob</code>
+      </div>
+    </div>
+    <div class="step">
+      <span class="step-num">3</span>
+      <div class="step-content">
+        <h3>Install hooks (optional)</h3>
+        <p>For auto-discovery of external Claude sessions:</p>
+        <code>git clone https://github.com/nickelbob/mob.git && cd mob && npm run install-hooks</code>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <div class="footer-links">
+    <a href="https://github.com/nickelbob/mob">GitHub</a>
+    <a href="https://www.npmjs.com/package/mob-coordinator">npm</a>
+    <a href="https://github.com/nickelbob/mob/blob/main/LICENSE">MIT License</a>
+  </div>
+  <p>mob-coordinator v0.2.2</p>
+</footer>
+
+</body>
+</html>
