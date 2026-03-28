@@ -33,18 +33,12 @@ mob
 
 Open `http://localhost:4040` in your browser.
 
-### Install Claude Code Hooks
-
-To enable status reporting (state, branch, auto-naming) from Claude instances, clone the repo and run the hook installer:
+Claude Code hooks are installed automatically on first launch. These enable status reporting (state, branch, auto-naming) from Claude instances. To manually manage hooks:
 
 ```bash
-git clone https://github.com/nickelbob/mob.git
-cd mob
-npm install
-npm run install-hooks
+mob install-hooks      # Re-install hooks
+mob uninstall-hooks    # Remove hooks
 ```
-
-This adds hook entries to `~/.claude/settings.json` that point to the hook scripts in the cloned repo. You only need to do this once — the hooks work regardless of whether you run mob via npm or from source.
 
 ### Development
 
@@ -137,10 +131,8 @@ See `CLAUDE.md` for detailed architecture documentation.
 
 ## Uninstalling Hooks
 
-From the cloned repo:
-
 ```bash
-npm run uninstall-hooks
+mob uninstall-hooks
 ```
 
 ## Troubleshooting
@@ -166,7 +158,7 @@ MOB_PORT=4050 npm run dev
 
 ### Hooks not reporting status
 
-1. Make sure hooks are installed: `npm run install-hooks`
+1. Hooks are auto-installed on startup. To force re-install: `mob install-hooks`
 2. Check `~/.claude/settings.json` has entries for `PreToolUse`, `PostToolUse`, `Stop`, `UserPromptSubmit`, and `Notification`
 3. On Windows, ensure PowerShell can run the hook script (execution policy)
 
@@ -175,6 +167,13 @@ MOB_PORT=4050 npm run dev
 If hooks aren't firing (crash, subtask weirdness), the terminal state fallback should correct the state within ~15 seconds. If an instance shows as running but the PTY process is dead, it will be marked stopped automatically on the next stale check cycle.
 
 ## Changelog
+
+### 0.3.0
+
+- Auto-install Claude Code hooks on server startup — no manual setup required
+- Add `mob install-hooks` and `mob uninstall-hooks` CLI subcommands
+- Include hook scripts in npm package
+- Add landing page website for GitHub Pages
 
 ### 0.2.1
 
