@@ -2,7 +2,7 @@
   import Dashboard from './components/Dashboard.svelte';
   import LaunchDialog from './components/LaunchDialog.svelte';
   import SettingsDialog from './components/SettingsDialog.svelte';
-  import { showLaunchDialog, showSettingsDialog, wsConnected, sortedInstances, visualInstances, selectedInstanceId, selectedInstance, sidebarCollapsed, errors, settings, wsClient, updateAvailable, updateStatus, updateError } from './lib/stores.js';
+  import { showLaunchDialog, showSettingsDialog, wsConnected, sortedInstances, visualInstances, selectedInstanceId, selectedInstance, sidebarCollapsed, errors, settings, wsClient, updateAvailable, updateStatus, updateError, groupedInstances, collapsedGroups } from './lib/stores.js';
   import { matchesShortcut, formatShortcut } from './lib/shortcuts.js';
 
   const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
@@ -33,6 +33,15 @@
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON') return;
     if ((e.target as HTMLElement)?.closest('.overlay')) return;
     refocusTerminal();
+  }
+
+  function getSelectedProject(): string | null {
+    const id = $selectedInstanceId;
+    if (!id || $groupedInstances.length <= 1) return null;
+    for (const group of $groupedInstances) {
+      if (group.instances.some(i => i.id === id)) return group.project;
+    }
+    return null;
   }
 
   // Refocus terminal when dialogs close
@@ -85,6 +94,23 @@
       e.preventDefault();
       showSettingsDialog.update(v => !v);
     }
+    // Collapse/expand the project group containing the selected instance
+    if (e.key === 'ArrowLeft' && (isMac ? e.altKey : e.altKey)) {
+      const project = getSelectedProject();
+      if (project !== null) {
+        e.preventDefault();
+        collapsedGroups.update(g => ({ ...g, [project]: true }));
+      }
+    }
+    if (e.key === 'ArrowRight' && (isMac ? e.altKey : e.altKey)) {
+      const project = getSelectedProject();
+      if (project !== null) {
+        e.preventDefault();
+        collapsedGroups.update(g => ({ ...g, [project]: false }));
+        refocusTerminal();
+      }
+    }
+
     // Jump to instance 1-9
     for (let i = 1; i <= 9; i++) {
       const key = `jumpToInstance${i}` as keyof typeof s;
