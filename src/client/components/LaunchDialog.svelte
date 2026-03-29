@@ -79,6 +79,8 @@
         selectSuggestion(suggestions[0]);
       }
     } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
       showSuggestions = false;
     }
   }
@@ -235,7 +237,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_interactive_supports_focus -->
 <div class="overlay" on:click={cancel} role="dialog" tabindex="-1">
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
-  <div class="dialog" on:click|stopPropagation role="document">
+  <div class="dialog" on:click|stopPropagation={() => { showSuggestions = false; }} role="document">
     <h2>Launch Claude Instance</h2>
 
     <div class="field">
@@ -473,9 +475,10 @@
     border-top: none;
     border-radius: 0 0 6px 6px;
     list-style: none;
-    max-height: 200px;
+    max-height: 120px;
     overflow-y: auto;
     z-index: 10;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   }
 
   .suggestions li {
