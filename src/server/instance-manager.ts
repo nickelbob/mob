@@ -8,7 +8,7 @@ import type { InstanceStatusFile } from './types.js';
 import type { SettingsManager } from './settings-manager.js';
 import { generateInstanceId } from './util/id.js';
 import { STALE_THRESHOLD_MS, HOOK_SILENCE_THRESHOLD_MS } from '../shared/constants.js';
-import { getGitBranch, resolvePath } from './util/platform.js';
+import { getGitBranch, getGitRoot, resolvePath } from './util/platform.js';
 import { fetchJiraStatus } from './jira-client.js';
 import { detectStateFromTerminal } from './terminal-state-detector.js';
 import fs from 'fs';
@@ -237,6 +237,7 @@ export class InstanceManager extends EventEmitter {
       name: autoName ? dirName : (payload.name || id),
       managed: true,
       cwd: effectiveCwd,
+      gitRoot: getGitRoot(effectiveCwd),
       gitBranch: getGitBranch(effectiveCwd),
       state: 'launching',
       lastUpdated: now,
@@ -342,6 +343,7 @@ export class InstanceManager extends EventEmitter {
       model: old.model,
       permissionMode: old.permissionMode,
       previousInstanceId: instanceId,
+      gitRoot: getGitRoot(old.cwd) || old.gitRoot,
       gitBranch: getGitBranch(old.cwd) || old.gitBranch,
     };
 
@@ -454,6 +456,7 @@ export class InstanceManager extends EventEmitter {
       name,
       managed: this.managedIds.has(data.id),
       cwd: data.cwd,
+      gitRoot: existing?.gitRoot || getGitRoot(data.cwd),
       gitBranch: data.gitBranch,
       state: data.state,
       ticket: data.ticket,

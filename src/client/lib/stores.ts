@@ -41,24 +41,32 @@ export interface ProjectGroup {
 }
 
 export const groupedInstances = derived(sortedInstances, ($sorted) => {
-  const groups = new Map<string, InstanceInfo[]>();
+  // Group by git repo root (same repo = same group), fall back to directory name
+  const groups = new Map<string, { key: string; name: string; instances: InstanceInfo[] }>();
   for (const instance of $sorted) {
-    // Use the last directory component as the project name
     const cwd = instance.cwd || '';
-    const project = cwd.split('/').filter(Boolean).pop() || 'Unknown';
-    const list = groups.get(project) || [];
-    list.push(instance);
-    groups.set(project, list);
+    const dirName = cwd.split('/').filter(Boolean).pop() || 'Unknown';
+    // Use gitRoot as group key so instances in the same repo cluster together
+    const key = instance.gitRoot || cwd;
+    const name = instance.gitRoot
+      ? instance.gitRoot.split('/').filter(Boolean).pop() || dirName
+      : dirName;
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, name, instances: [] };
+      groups.set(key, group);
+    }
+    group.instances.push(instance);
   }
   // Sort groups: groups with active instances first, then alphabetically
-  return Array.from(groups.entries())
-    .sort(([aName, aInstances], [bName, bInstances]) => {
-      const aHasActive = aInstances.some(i => i.state !== 'stopped') ? 0 : 1;
-      const bHasActive = bInstances.some(i => i.state !== 'stopped') ? 0 : 1;
+  return Array.from(groups.values())
+    .sort((a, b) => {
+      const aHasActive = a.instances.some(i => i.state !== 'stopped') ? 0 : 1;
+      const bHasActive = b.instances.some(i => i.state !== 'stopped') ? 0 : 1;
       if (aHasActive !== bHasActive) return aHasActive - bHasActive;
-      return aName.localeCompare(bName);
+      return a.name.localeCompare(b.name);
     })
-    .map(([project, instances]): ProjectGroup => ({ project, instances }));
+    .map(({ name, instances }): ProjectGroup => ({ project: name, instances }));
 });
 
 // Flat list in visual order: when grouped (2+ projects), follows group order; otherwise same as sortedInstances

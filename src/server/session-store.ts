@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getSessionsDir, getScrollbackDir, getGitBranch } from './util/platform.js';
+import { getSessionsDir, getScrollbackDir, getGitBranch, getGitRoot } from './util/platform.js';
 import { SESSION_MAX_AGE_MS } from '../shared/constants.js';
 import type { InstanceInfo } from '../shared/protocol.js';
 import { createLogger } from './util/logger.js';
@@ -81,6 +81,7 @@ export class SessionStore {
           name: data.name,
           managed: true,
           cwd: data.cwd,
+          gitRoot: getGitRoot(data.cwd),
           gitBranch: getGitBranch(data.cwd) || data.gitBranch,
           state: 'stopped',
           lastUpdated: data.stoppedAt || data.createdAt,

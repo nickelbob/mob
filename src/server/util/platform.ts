@@ -46,6 +46,23 @@ export function resolvePath(p: string): string {
   return path.resolve(resolved);
 }
 
+export function getGitRoot(cwd: string): string | undefined {
+  try {
+    let resolved = cwd;
+    if (resolved.startsWith('~/') || resolved === '~') {
+      resolved = os.homedir() + resolved.slice(1);
+    }
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: resolved,
+      encoding: 'utf-8',
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function getGitBranch(cwd: string): string | undefined {
   try {
     let resolved = cwd;

@@ -47,6 +47,7 @@ export interface InstanceInfo {
   name: string;
   managed: boolean;
   cwd: string;
+  gitRoot?: string;
   gitBranch?: string;
   state: InstanceState;
   ticket?: string;
