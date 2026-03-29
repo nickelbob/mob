@@ -20,7 +20,19 @@ export function createWsServer(
   instanceManager: InstanceManager,
   ptyManager: PtyManager,
 ): WsServerHandle {
-  const wss = new WebSocketServer({ server, path: '/mob-ws' });
+  const wss = new WebSocketServer({
+    server,
+    path: '/mob-ws',
+    verifyClient: ({ origin }: { origin: string }) => {
+      if (!origin) return true; // non-browser clients (CLI, curl, etc.)
+      try {
+        const url = new URL(origin);
+        return url.hostname === '127.0.0.1' || url.hostname === 'localhost';
+      } catch {
+        return false;
+      }
+    },
+  });
   let clientCount = 0;
   let updateInfo: { current: string; latest: string } | null = null;
   let restartCallback: (() => void) | null = null;
