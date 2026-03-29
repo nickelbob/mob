@@ -222,6 +222,15 @@ Hooks are auto-installed on first launch to enable status reporting. They are ad
 
 ## Changelog
 
+### 0.5.0
+
+- **Custom project groups** — set a group name in the launch dialog or edit it after creation; instances with the same group merge
+- **Inline instance editing** — pencil icon on instance cards lets you edit name, group, model, and permission mode live
+- **Smart repo grouping** — clones of the same repo auto-group via git remote URL detection; case-insensitive matching
+- **Alt+Left/Right** — collapse/expand the project group of the selected instance
+- Fix browser autofill populating the working directory field
+- Fix browse button triggering on Enter in launch dialog
+
 ### 0.4.2
 
 - **Create & Launch** — launching in a non-existent directory now prompts to create it instead of spawning a blank session
