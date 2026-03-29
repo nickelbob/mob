@@ -2,7 +2,7 @@
   import type { InstanceInfo } from '../lib/types.js';
   import StatusBadge from './StatusBadge.svelte';
   import ProgressBar from './ProgressBar.svelte';
-  import { selectedInstanceId, wsClient } from '../lib/stores.js';
+  import { selectedInstanceId, wsClient, groupNames } from '../lib/stores.js';
 
   export let instance: InstanceInfo;
 
@@ -100,7 +100,12 @@
       </div>
       <div class="edit-field">
         <label>Project / Group</label>
-        <input type="text" bind:value={editProject} placeholder="(auto-detected)" />
+        <input type="text" bind:value={editProject} placeholder="(auto-detected)" list="mob-group-names-{instance.id}" />
+        <datalist id="mob-group-names-{instance.id}">
+          {#each $groupNames as gn}
+            <option value={gn} />
+          {/each}
+        </datalist>
       </div>
       <div class="edit-row">
         <div class="edit-field">

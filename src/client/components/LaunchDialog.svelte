@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { showLaunchDialog, wsClient, settings, launchConflicts, instances } from '../lib/stores.js';
+  import { showLaunchDialog, wsClient, settings, launchConflicts, instances, groupNames } from '../lib/stores.js';
   import { get } from 'svelte/store';
   import type { LaunchConflicts } from '../lib/types.js';
 
@@ -302,7 +302,12 @@
 
     <div class="field">
       <label for="mob-launch-project">Project / Group</label>
-      <input id="mob-launch-project" type="text" bind:value={project} placeholder="(auto-detected from repo)" />
+      <input id="mob-launch-project" type="text" bind:value={project} placeholder="(auto-detected from repo)" list="mob-launch-group-names" />
+      <datalist id="mob-launch-group-names">
+        {#each $groupNames as gn}
+          <option value={gn} />
+        {/each}
+      </datalist>
     </div>
 
     <div class="field">

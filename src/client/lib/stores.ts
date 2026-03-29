@@ -67,10 +67,8 @@ export const groupedInstances = derived(sortedInstances, ($sorted) => {
     const name = instance.project
       || (instance.gitRemoteUrl ? remoteToName.get(instance.gitRemoteUrl) : undefined)
       || (instance.gitRoot ? instance.gitRoot.split('/').filter(Boolean).pop() || dirName : dirName);
-    // Key: project > remote URL (so clones merge) > name
-    const key = instance.project?.toLowerCase()
-      || instance.gitRemoteUrl?.toLowerCase()
-      || name.toLowerCase();
+    // Always key by display name (lowercased) so all naming sources merge case-insensitively
+    const key = name.toLowerCase();
     let group = groups.get(key);
     if (!group) {
       group = { name, instances: [] };
@@ -88,6 +86,11 @@ export const groupedInstances = derived(sortedInstances, ($sorted) => {
     })
     .map(({ name, instances }): ProjectGroup => ({ project: name, instances }));
 });
+
+// List of existing group names for autocomplete
+export const groupNames = derived(groupedInstances, ($groups) =>
+  $groups.map(g => g.project),
+);
 
 // Flat list in visual order: when grouped (2+ projects), follows group order; otherwise same as sortedInstances
 export const visualInstances = derived([groupedInstances, sortedInstances], ([$grouped, $sorted]) => {
