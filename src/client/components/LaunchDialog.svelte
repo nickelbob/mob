@@ -134,7 +134,7 @@
     });
   }
 
-  function doLaunch(extra?: { cloneDir?: string }) {
+  function doLaunch(extra?: { cloneDir?: string; createDir?: boolean }) {
     wsClient.send({
       type: 'launch',
       payload: buildPayload(extra),

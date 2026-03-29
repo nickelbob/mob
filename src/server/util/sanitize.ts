@@ -67,6 +67,7 @@ export interface ValidatedLaunchPayload {
   model?: string;
   permissionMode?: string;
   cloneDir?: string;
+  createDir?: boolean;
 }
 
 export function validateLaunchPayload(payload: unknown): { valid: true; data: ValidatedLaunchPayload } | { valid: false; error: string } {
@@ -114,6 +115,7 @@ export function validateLaunchPayload(payload: unknown): { valid: true; data: Va
       model: (typeof p.model === 'string' && p.model) || undefined,
       permissionMode: (typeof p.permissionMode === 'string' && p.permissionMode) || undefined,
       cloneDir: (typeof p.cloneDir === 'string' && p.cloneDir) || undefined,
+      createDir: p.createDir === true ? true : undefined,
     },
   };
 }
