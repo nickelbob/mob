@@ -241,11 +241,12 @@
     <h2>Launch Claude Instance</h2>
 
     <div class="field">
-      <label for="cwd">Working Directory *</label>
+      <label for="mob-launch-cwd">Working Directory *</label>
       <div class="autocomplete-wrap">
         <div class="input-with-browse">
           <input
-            id="cwd"
+            id="mob-launch-cwd"
+            name="mob-launch-cwd"
             type="text"
             bind:value={cwd}
             on:input={onCwdInput}
@@ -253,7 +254,7 @@
             on:focus={() => { if (suggestions.length) showSuggestions = true; }}
             on:blur={() => { setTimeout(() => showSuggestions = false, 200); }}
             placeholder="~/Development/my-project"
-            autocomplete="off"
+            autocomplete="nope"
             use:autofocus
           />
           {#if canBrowse}
