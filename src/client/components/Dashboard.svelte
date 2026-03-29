@@ -1,7 +1,7 @@
 <script lang="ts">
   import InstanceList from './InstanceList.svelte';
   import TerminalPanel from './TerminalPanel.svelte';
-  import { selectedInstance, selectedInstanceId, sidebarCollapsed, sortedInstances } from '../lib/stores.js';
+  import { selectedInstance, selectedInstanceId, sidebarCollapsed, visualInstances } from '../lib/stores.js';
   import type { InstanceState } from '../../shared/protocol.js';
 
   let toast: { name: string; branch?: string; cwd: string } | null = null;
@@ -31,9 +31,9 @@
     <div class="sidebar-content">
       <InstanceList />
     </div>
-    {#if $sidebarCollapsed && $sortedInstances.length > 0}
+    {#if $sidebarCollapsed && $visualInstances.length > 0}
       <div class="mini-instances">
-        {#each $sortedInstances as inst (inst.id)}
+        {#each $visualInstances as inst (inst.id)}
           <button
             class="mini-square {inst.state}"
             class:selected={$selectedInstanceId === inst.id}

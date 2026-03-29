@@ -61,6 +61,12 @@ export const groupedInstances = derived(sortedInstances, ($sorted) => {
     .map(([project, instances]): ProjectGroup => ({ project, instances }));
 });
 
+// Flat list in visual order: when grouped (2+ projects), follows group order; otherwise same as sortedInstances
+export const visualInstances = derived([groupedInstances, sortedInstances], ([$grouped, $sorted]) => {
+  if ($grouped.length <= 1) return $sorted;
+  return $grouped.flatMap(g => g.instances);
+});
+
 // Wire up WebSocket to stores
 wsClient.setConnectionHandler((connected) => {
   wsConnected.set(connected);

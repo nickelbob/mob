@@ -19,6 +19,7 @@ export interface LaunchPayload {
   model?: string;
   permissionMode?: string;
   cloneDir?: string;
+  createDir?: boolean;
 }
 
 // Server → Client messages
@@ -36,6 +37,7 @@ export type ServerMessage =
 
 export interface LaunchConflicts {
   cwd: string;
+  cwdExists: boolean;
   sameDirInstances: Array<{ id: string; name: string; state: InstanceState }>;
   sameBranchInstances: Array<{ id: string; name: string; branch: string; cwd: string }>;
 }

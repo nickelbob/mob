@@ -2,13 +2,13 @@
   import Dashboard from './components/Dashboard.svelte';
   import LaunchDialog from './components/LaunchDialog.svelte';
   import SettingsDialog from './components/SettingsDialog.svelte';
-  import { showLaunchDialog, showSettingsDialog, wsConnected, sortedInstances, selectedInstanceId, selectedInstance, sidebarCollapsed, errors, settings, wsClient, updateAvailable, updateStatus, updateError } from './lib/stores.js';
+  import { showLaunchDialog, showSettingsDialog, wsConnected, sortedInstances, visualInstances, selectedInstanceId, selectedInstance, sidebarCollapsed, errors, settings, wsClient, updateAvailable, updateStatus, updateError } from './lib/stores.js';
   import { matchesShortcut, formatShortcut } from './lib/shortcuts.js';
 
   const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
 
   function cycleInstance(direction: number) {
-    const list = $sortedInstances;
+    const list = $visualInstances;
     if (list.length === 0) return;
     const currentIndex = list.findIndex(i => i.id === $selectedInstanceId);
     let next: number;
@@ -86,7 +86,7 @@
     for (let i = 1; i <= 9; i++) {
       const key = `jumpToInstance${i}` as keyof typeof s;
       if (matchesShortcut(e, s[key], isMac)) {
-        const list = $sortedInstances;
+        const list = $visualInstances;
         if (i - 1 < list.length) {
           e.preventDefault();
           selectedInstanceId.set(list[i - 1].id);

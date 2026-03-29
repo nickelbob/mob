@@ -86,13 +86,17 @@
   // Conflict state
   let conflicts: LaunchConflicts | null = null;
   let showConflictWarning = false;
+  let showCwdMissing = false;
   let cloneDir = '';
   let showCloneInput = false;
 
   // Subscribe to conflict responses
   const unsubConflicts = launchConflicts.subscribe((c) => {
     if (!c) return;
-    if (c.sameDirInstances.length > 0 || c.sameBranchInstances.length > 0) {
+    if (!c.cwdExists) {
+      showCwdMissing = true;
+      conflicts = c;
+    } else if (c.sameDirInstances.length > 0 || c.sameBranchInstances.length > 0) {
       conflicts = c;
       showConflictWarning = true;
       // Pre-fill clone dir
@@ -105,7 +109,7 @@
     launchConflicts.set(null);
   });
 
-  function buildPayload(extra?: { cloneDir?: string }) {
+  function buildPayload(extra?: { cloneDir?: string; createDir?: boolean }) {
     return {
       name: autoName ? '' : (name.trim() || `Instance ${Date.now().toString(36)}`),
       autoName,
@@ -153,6 +157,17 @@
     doLaunch({ cloneDir: cloneDir.trim() });
   }
 
+  function createDirAndLaunch() {
+    showCwdMissing = false;
+    conflicts = null;
+    doLaunch({ createDir: true });
+  }
+
+  function cancelMissing() {
+    showCwdMissing = false;
+    conflicts = null;
+  }
+
   function cancelConflict() {
     showConflictWarning = false;
     showCloneInput = false;
@@ -175,6 +190,7 @@
     showSuggestions = false;
     conflicts = null;
     showConflictWarning = false;
+    showCwdMissing = false;
     showCloneInput = false;
     cloneDir = '';
   }
@@ -303,7 +319,19 @@
       </div>
     </div>
 
-    {#if showConflictWarning && conflicts}
+    {#if showCwdMissing}
+      <div class="conflict-warning">
+        <div class="conflict-header">Directory not found</div>
+        <div class="conflict-item">
+          <span class="conflict-icon">&#x26A0;</span>
+          <span><code>{cwd.trim()}</code> does not exist. Create it?</span>
+        </div>
+        <div class="conflict-actions">
+          <button class="cancel-btn" on:click={cancelMissing}>Cancel</button>
+          <button class="launch-btn" on:click={createDirAndLaunch}>Create & Launch</button>
+        </div>
+      </div>
+    {:else if showConflictWarning && conflicts}
       <div class="conflict-warning">
         <div class="conflict-header">Conflicts detected</div>
         {#each conflicts.sameDirInstances as inst}

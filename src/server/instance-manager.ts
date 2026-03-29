@@ -11,6 +11,7 @@ import { STALE_THRESHOLD_MS, HOOK_SILENCE_THRESHOLD_MS } from '../shared/constan
 import { getGitBranch, resolvePath } from './util/platform.js';
 import { fetchJiraStatus } from './jira-client.js';
 import { detectStateFromTerminal } from './terminal-state-detector.js';
+import fs from 'fs';
 import { execFileSync } from 'child_process';
 import { loadProjectConfig, type ProjectConfig } from './project-config.js';
 import { createLogger } from './util/logger.js';
@@ -173,6 +174,11 @@ export class InstanceManager extends EventEmitter {
 
   checkConflicts(cwd: string): LaunchConflicts {
     const resolved = resolvePath(cwd);
+    let cwdExists = false;
+    try {
+      cwdExists = fs.statSync(resolved).isDirectory();
+    } catch { /* doesn't exist */ }
+
     const branch = getGitBranch(cwd);
     const sameDirInstances: LaunchConflicts['sameDirInstances'] = [];
     const sameBranchInstances: LaunchConflicts['sameBranchInstances'] = [];
@@ -190,7 +196,7 @@ export class InstanceManager extends EventEmitter {
       }
     }
 
-    return { cwd, sameDirInstances, sameBranchInstances };
+    return { cwd, cwdExists, sameDirInstances, sameBranchInstances };
   }
 
   cloneRepo(sourceCwd: string, targetDir: string): void {
@@ -208,6 +214,13 @@ export class InstanceManager extends EventEmitter {
     if (payload.cloneDir) {
       this.cloneRepo(payload.cwd, payload.cloneDir);
       effectiveCwd = payload.cloneDir;
+    }
+
+    // Create directory if requested
+    if (payload.createDir) {
+      const resolved = resolvePath(effectiveCwd);
+      fs.mkdirSync(resolved, { recursive: true });
+      this.log.info(`Created directory: ${resolved}`);
     }
 
     // Load per-project config (.mob/config.json) and apply defaults
