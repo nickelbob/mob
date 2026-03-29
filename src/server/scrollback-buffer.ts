@@ -63,17 +63,24 @@ export class ScrollbackBuffer {
     }
   }
 
+  private flushEntry(dir: string, instanceId: string, entry: BufferEntry): void {
+    const filePath = path.join(dir, `${instanceId}.log`);
+    const tmpPath = filePath + '.tmp';
+    try {
+      fs.writeFileSync(tmpPath, entry.chunks.join(''), 'utf8');
+      fs.renameSync(tmpPath, filePath);
+      entry.dirty = false;
+    } catch (err) {
+      log.error(`Failed to flush ${instanceId}:`, err);
+      try { fs.unlinkSync(tmpPath); } catch { /* ok */ }
+    }
+  }
+
   private flushDirty(): void {
     const dir = getScrollbackDir();
     for (const [instanceId, entry] of this.buffers) {
       if (!entry.dirty) continue;
-      try {
-        const filePath = path.join(dir, `${instanceId}.log`);
-        fs.writeFileSync(filePath, entry.chunks.join(''), 'utf8');
-        entry.dirty = false;
-      } catch (err) {
-        log.error(`Failed to flush ${instanceId}:`, err);
-      }
+      this.flushEntry(dir, instanceId, entry);
     }
   }
 
@@ -81,13 +88,7 @@ export class ScrollbackBuffer {
     const dir = getScrollbackDir();
     for (const [instanceId, entry] of this.buffers) {
       if (!entry.dirty) continue;
-      try {
-        const filePath = path.join(dir, `${instanceId}.log`);
-        fs.writeFileSync(filePath, entry.chunks.join(''), 'utf8');
-        entry.dirty = false;
-      } catch (err) {
-        log.error(`Failed to flush ${instanceId}:`, err);
-      }
+      this.flushEntry(dir, instanceId, entry);
     }
   }
 

@@ -66,6 +66,7 @@ export interface ValidatedLaunchPayload {
   cwd: string;
   model?: string;
   permissionMode?: string;
+  cloneDir?: string;
 }
 
 export function validateLaunchPayload(payload: unknown): { valid: true; data: ValidatedLaunchPayload } | { valid: false; error: string } {
@@ -97,6 +98,13 @@ export function validateLaunchPayload(payload: unknown): { valid: true; data: Va
     }
   }
 
+  // cloneDir: optional, valid path
+  if (p.cloneDir !== undefined && p.cloneDir !== '') {
+    if (typeof p.cloneDir !== 'string' || !isValidCwd(p.cloneDir)) {
+      return { valid: false, error: 'Invalid cloneDir (must be absolute path or start with ~, max 1024 chars)' };
+    }
+  }
+
   return {
     valid: true,
     data: {
@@ -105,6 +113,7 @@ export function validateLaunchPayload(payload: unknown): { valid: true; data: Va
       cwd: p.cwd,
       model: (typeof p.model === 'string' && p.model) || undefined,
       permissionMode: (typeof p.permissionMode === 'string' && p.permissionMode) || undefined,
+      cloneDir: (typeof p.cloneDir === 'string' && p.cloneDir) || undefined,
     },
   };
 }

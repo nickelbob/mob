@@ -1,5 +1,11 @@
 import type { InstanceState } from '../shared/protocol.js';
 
+// Strip ANSI escape sequences so pattern matching works on clean text
+const ANSI_RE = /\x1B(?:\[[0-9;]*[a-zA-Z]|\][^\x07]*\x07|\([A-B0-2])/g;
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, '');
+}
+
 // Braille spinner characters used by Claude CLI
 const SPINNER_CHARS = '⠋⠙⠚⠞⠖⠦⠴⠵⠸⠇⠏';
 
@@ -28,6 +34,9 @@ const IDLE_PATTERNS = [
 
 export function detectStateFromTerminal(scrollbackTail: string): InstanceState | null {
   if (!scrollbackTail || scrollbackTail.length === 0) return null;
+
+  // Strip ANSI escape codes so they don't interfere with pattern matching
+  scrollbackTail = stripAnsi(scrollbackTail);
 
   // Check waiting patterns first (highest priority)
   for (const pattern of WAITING_PATTERNS) {

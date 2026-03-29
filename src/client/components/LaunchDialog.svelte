@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { showLaunchDialog, wsClient, settings } from '../lib/stores.js';
+  import { showLaunchDialog, wsClient, settings, launchConflicts } from '../lib/stores.js';
   import { get } from 'svelte/store';
+  import type { LaunchConflicts } from '../lib/types.js';
 
   const launchDefaults = get(settings).launch;
   let name = '';
@@ -44,6 +45,7 @@
   onDestroy(() => {
     if (debounceTimer) clearTimeout(debounceTimer);
     abortController?.abort();
+    unsubConflicts();
   });
 
   function onCwdInput() {
@@ -81,23 +83,80 @@
     }
   }
 
+  // Conflict state
+  let conflicts: LaunchConflicts | null = null;
+  let showConflictWarning = false;
+  let cloneDir = '';
+  let showCloneInput = false;
+
+  // Subscribe to conflict responses
+  const unsubConflicts = launchConflicts.subscribe((c) => {
+    if (!c) return;
+    if (c.sameDirInstances.length > 0 || c.sameBranchInstances.length > 0) {
+      conflicts = c;
+      showConflictWarning = true;
+      // Pre-fill clone dir
+      const base = cwd.trim().replace(/\/+$/, '');
+      cloneDir = `${base}-${Date.now().toString(36).slice(-4)}`;
+    } else {
+      // No conflicts — proceed with launch
+      doLaunch();
+    }
+    launchConflicts.set(null);
+  });
+
+  function buildPayload(extra?: { cloneDir?: string }) {
+    return {
+      name: autoName ? '' : (name.trim() || `Instance ${Date.now().toString(36)}`),
+      autoName,
+      cwd: cwd.trim(),
+      model: model || undefined,
+      permissionMode: permissionMode || undefined,
+      ...extra,
+    };
+  }
+
   function launch() {
     if (!cwd.trim()) {
       alert('Working directory is required');
       return;
     }
+    // Check for conflicts first
+    wsClient.send({
+      type: 'launch:check',
+      payload: buildPayload(),
+    });
+  }
+
+  function doLaunch(extra?: { cloneDir?: string }) {
     wsClient.send({
       type: 'launch',
-      payload: {
-        name: autoName ? '' : (name.trim() || `Instance ${Date.now().toString(36)}`),
-        autoName,
-        cwd: cwd.trim(),
-        model: model || undefined,
-        permissionMode: permissionMode || undefined,
-      },
+      payload: buildPayload(extra),
     });
     showLaunchDialog.set(false);
     reset();
+  }
+
+  function launchAnyway() {
+    showConflictWarning = false;
+    conflicts = null;
+    doLaunch();
+  }
+
+  function launchWithClone() {
+    if (!cloneDir.trim()) {
+      alert('Clone directory is required');
+      return;
+    }
+    showConflictWarning = false;
+    conflicts = null;
+    doLaunch({ cloneDir: cloneDir.trim() });
+  }
+
+  function cancelConflict() {
+    showConflictWarning = false;
+    showCloneInput = false;
+    conflicts = null;
   }
 
   function cancel() {
@@ -114,6 +173,10 @@
     permissionMode = defaults.permissionMode;
     suggestions = [];
     showSuggestions = false;
+    conflicts = null;
+    showConflictWarning = false;
+    showCloneInput = false;
+    cloneDir = '';
   }
 
   let browsing = false;
@@ -240,10 +303,45 @@
       </div>
     </div>
 
-    <div class="actions">
-      <button class="cancel-btn" on:click={cancel}>Cancel</button>
-      <button class="launch-btn" on:click={launch}>Launch (Ctrl+Enter)</button>
-    </div>
+    {#if showConflictWarning && conflicts}
+      <div class="conflict-warning">
+        <div class="conflict-header">Conflicts detected</div>
+        {#each conflicts.sameDirInstances as inst}
+          <div class="conflict-item">
+            <span class="conflict-icon">&#x26A0;</span>
+            <span><strong>{inst.name}</strong> is already {inst.state} in this directory</span>
+          </div>
+        {/each}
+        {#each conflicts.sameBranchInstances as inst}
+          <div class="conflict-item">
+            <span class="conflict-icon">&#x26A0;</span>
+            <span><strong>{inst.name}</strong> is on the same branch <code>{inst.branch}</code> in {inst.cwd}</span>
+          </div>
+        {/each}
+
+        {#if showCloneInput}
+          <div class="clone-field">
+            <label for="cloneDir">Clone to directory</label>
+            <input id="cloneDir" type="text" bind:value={cloneDir} placeholder="~/Development/my-project-copy" />
+          </div>
+          <div class="conflict-actions">
+            <button class="cancel-btn" on:click={cancelConflict}>Back</button>
+            <button class="launch-btn" on:click={launchWithClone}>Clone & Launch</button>
+          </div>
+        {:else}
+          <div class="conflict-actions">
+            <button class="cancel-btn" on:click={cancelConflict}>Cancel</button>
+            <button class="clone-btn" on:click={() => showCloneInput = true}>Clone & Launch</button>
+            <button class="launch-btn" on:click={launchAnyway}>Launch Anyway</button>
+          </div>
+        {/if}
+      </div>
+    {:else}
+      <div class="actions">
+        <button class="cancel-btn" on:click={cancel}>Cancel</button>
+        <button class="launch-btn" on:click={launch}>Launch (Ctrl+Enter)</button>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -428,5 +526,76 @@
 
   .launch-btn:hover {
     background: var(--accent-hover);
+  }
+
+  .conflict-warning {
+    background: rgba(255, 180, 50, 0.08);
+    border: 1px solid rgba(255, 180, 50, 0.3);
+    border-radius: 8px;
+    padding: 14px;
+    margin-top: 16px;
+  }
+
+  .conflict-header {
+    font-size: 13px;
+    font-weight: 600;
+    color: #f0a030;
+    margin-bottom: 8px;
+  }
+
+  .conflict-item {
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 4px 0;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .conflict-icon {
+    color: #f0a030;
+    flex-shrink: 0;
+  }
+
+  .conflict-item code {
+    background: var(--bg-primary);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
+
+  .conflict-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .clone-btn {
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #f0a030;
+    border: 1px solid rgba(255, 180, 50, 0.4);
+    background: transparent;
+  }
+
+  .clone-btn:hover {
+    background: rgba(255, 180, 50, 0.1);
+    border-color: #f0a030;
+  }
+
+  .clone-field {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .clone-field label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 600;
   }
 </style>

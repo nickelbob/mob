@@ -1,5 +1,5 @@
 import { writable, derived, get } from 'svelte/store';
-import type { InstanceInfo } from './types.js';
+import type { InstanceInfo, LaunchConflicts } from './types.js';
 import type { Settings } from '../../shared/settings.js';
 import { DEFAULT_SETTINGS } from '../../shared/settings.js';
 import { WsClient } from './ws-client.js';
@@ -18,6 +18,7 @@ export const errors = writable<Array<{ message: string; context?: string; timest
 export const updateAvailable = writable<{ current: string; latest: string } | null>(null);
 export const updateStatus = writable<'idle' | 'installing' | 'success' | 'failed'>('idle');
 export const updateError = writable<string | null>(null);
+export const launchConflicts = writable<LaunchConflicts | null>(null);
 
 export const selectedInstance = derived(
   [instances, selectedInstanceId],
@@ -32,6 +33,32 @@ export const sortedInstances = derived(instances, ($instances) => {
     if (aStop !== bStop) return aStop - bStop;
     return (a.createdAt ?? 0) - (b.createdAt ?? 0);
   });
+});
+
+export interface ProjectGroup {
+  project: string;
+  instances: InstanceInfo[];
+}
+
+export const groupedInstances = derived(sortedInstances, ($sorted) => {
+  const groups = new Map<string, InstanceInfo[]>();
+  for (const instance of $sorted) {
+    // Use the last directory component as the project name
+    const cwd = instance.cwd || '';
+    const project = cwd.split('/').filter(Boolean).pop() || 'Unknown';
+    const list = groups.get(project) || [];
+    list.push(instance);
+    groups.set(project, list);
+  }
+  // Sort groups: groups with active instances first, then alphabetically
+  return Array.from(groups.entries())
+    .sort(([aName, aInstances], [bName, bInstances]) => {
+      const aHasActive = aInstances.some(i => i.state !== 'stopped') ? 0 : 1;
+      const bHasActive = bInstances.some(i => i.state !== 'stopped') ? 0 : 1;
+      if (aHasActive !== bHasActive) return aHasActive - bHasActive;
+      return aName.localeCompare(bName);
+    })
+    .map(([project, instances]): ProjectGroup => ({ project, instances }));
 });
 
 // Wire up WebSocket to stores
@@ -61,7 +88,8 @@ wsClient.onMessage((msg) => {
         return new Map(map);
       });
       if (get(settings).general.notifications) {
-        checkWaitingNotification(msg.payload.id, msg.payload.name, msg.payload.state);
+        const s = get(settings);
+        checkWaitingNotification(msg.payload.id, msg.payload.name, msg.payload.state, s.general.notificationSound);
       }
       break;
     case 'instance:remove':
@@ -92,6 +120,9 @@ wsClient.onMessage((msg) => {
       if (msg.payload.error) {
         updateError.set(msg.payload.error);
       }
+      break;
+    case 'launch:conflicts':
+      launchConflicts.set(msg.payload);
       break;
   }
 

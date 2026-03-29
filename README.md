@@ -8,10 +8,14 @@ A local web dashboard for coordinating multiple Claude Code CLI sessions. Launch
 
 - **Launch and manage** multiple Claude Code sessions from a web UI
 - **Live terminal** view with full I/O for each session (xterm.js)
+- **Project grouping** — instances auto-group by project directory in the sidebar when working across repos
 - **Session persistence** — sessions survive server restarts and auto-resume
 - **Auto-naming** — sessions are named based on what Claude is working on, refreshed every 5 prompts
+- **Per-project config** — `.mob/config.json` for setup/teardown scripts and launch defaults per repo
+- **Shell readiness detection** — waits for shell prompt before injecting commands (no more garbled output)
 - **Hook integration** — external Claude instances report status via hook scripts
 - **Terminal state fallback** — detects running/waiting/idle from terminal output when hooks are silent
+- **Notification sounds** — optional audio ping when an instance needs input (in addition to browser notifications)
 - **Browser notifications** — get notified when an instance needs input while you're in another tab
 - **Git branch tracking** — see which branch each session is on, with tiered refresh rates
 - **JIRA integration** — auto-detect ticket keys from branch names, show ticket status
@@ -107,12 +111,33 @@ Open via the gear icon or **Settings** in the UI. Configurable sections:
 - **Shortcuts** — rebind any keyboard shortcut
 - **Launch Defaults** — default working directory, model, permission mode, auto-naming
 - **Terminal** — font size, cursor style, scrollback lines
-- **General** — sidebar default state, terminal cache size, browser notifications
+- **General** — sidebar default state, terminal cache size, browser notifications, notification sounds
 - **JIRA** — base URL, email, and API token for ticket status integration
+
+### Per-Project Configuration
+
+Create a `.mob/config.json` in any project directory to customize behavior for that repo:
+
+```json
+{
+  "setup": ["nvm use", "source .venv/bin/activate"],
+  "teardown": ["deactivate"],
+  "defaults": {
+    "model": "claude-sonnet-4-6",
+    "permissionMode": "plan"
+  }
+}
+```
+
+- **setup** — shell commands run before Claude starts (after shell is ready)
+- **teardown** — shell commands run when the instance is killed (best-effort)
+- **defaults** — pre-fill launch settings (model, permissionMode, autoName)
 
 ### Browser Notifications
 
 When enabled (default: on), mob sends a browser notification when an instance transitions to "waiting" while the tab is not focused. Grant notification permission when prompted on first load.
+
+You can also enable **notification sounds** in Settings > General to get an audio ping when an instance needs input, even when the tab is visible.
 
 ### JIRA Integration
 
@@ -196,6 +221,17 @@ The npm package is `mob-coordinator` to avoid conflicts. The CLI command is `mob
 Hooks are auto-installed on first launch to enable status reporting. They are additive and don't overwrite existing configuration. You can skip them with `mob --no-hooks` or remove them with `mob uninstall-hooks`.
 
 ## Changelog
+
+### 0.4.0
+
+- **Project grouping** — sidebar auto-groups instances by project directory when working across 2+ repos, with collapsible headers
+- **Per-project config** — `.mob/config.json` supports setup/teardown scripts and launch defaults per repo
+- **Shell readiness detection** — replaces hardcoded 500ms delay with prompt detection + 5s timeout fallback
+- **Notification sounds** — opt-in audio ping when an instance needs input (Settings > General)
+- **Backpressure management** — terminal data batched at ~60fps with per-client buffer caps to prevent memory growth
+- **Tree-kill** — reliably terminates entire process tree (shell + claude + children) on kill
+- **Atomic file writes** — session and scrollback files use write-then-rename to prevent corruption on crash
+- **ANSI escape filtering** — terminal state detector strips escape sequences for more reliable pattern matching
 
 ### 0.3.7
 

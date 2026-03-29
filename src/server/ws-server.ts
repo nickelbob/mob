@@ -63,21 +63,49 @@ export function createWsServer(
   instanceManager.on('remove', (id) => {
     log.info( `Instance removed: ${id}`);
     broadcast({ type: 'instance:remove', payload: { instanceId: id } });
+    // Clean up backpressure state
+    outputBuffers.delete(id);
+    const timer = batchTimers.get(id);
+    if (timer) { clearTimeout(timer); batchTimers.delete(id); }
   });
 
-  // Forward PTY data to subscribed clients
-  ptyManager.on('data', (instanceId: string, data: string) => {
+  // Backpressure management: batch terminal data per-instance at ~60fps
+  const BATCH_INTERVAL_MS = 16;
+  const MAX_BUFFER_BYTES = 2 * 1024 * 1024; // 2MB per-client cap
+  const outputBuffers = new Map<string, string>();
+
+  function flushOutputBuffer(instanceId: string): void {
+    const buffered = outputBuffers.get(instanceId);
+    if (!buffered) return;
+    outputBuffers.delete(instanceId);
+
     const subs = instanceManager.subscribers.get(instanceId);
-    if (subs) {
-      const msg = JSON.stringify({
-        type: 'terminal:output',
-        payload: { instanceId, data },
-      } satisfies ServerMessage);
-      for (const client of subs) {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(msg);
-        }
+    if (!subs) return;
+
+    const msg = JSON.stringify({
+      type: 'terminal:output',
+      payload: { instanceId, data: buffered },
+    } satisfies ServerMessage);
+
+    for (const client of subs) {
+      if (client.readyState === WebSocket.OPEN && client.bufferedAmount < MAX_BUFFER_BYTES) {
+        client.send(msg);
       }
+    }
+  }
+
+  const batchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  // Forward PTY data to subscribed clients (batched)
+  ptyManager.on('data', (instanceId: string, data: string) => {
+    const existing = outputBuffers.get(instanceId) || '';
+    outputBuffers.set(instanceId, existing + data);
+
+    if (!batchTimers.has(instanceId)) {
+      batchTimers.set(instanceId, setTimeout(() => {
+        batchTimers.delete(instanceId);
+        flushOutputBuffer(instanceId);
+      }, BATCH_INTERVAL_MS));
     }
   });
 
@@ -129,6 +157,23 @@ export function createWsServer(
             payload: { instances: instanceManager.getAll(), ...(updateInfo ? { updateAvailable: updateInfo } : {}) },
           } satisfies ServerMessage));
           break;
+
+        case 'launch:check': {
+          const checkValidation = validateLaunchPayload(msg.payload);
+          if (!checkValidation.valid) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              payload: { message: checkValidation.error },
+            }));
+            break;
+          }
+          const conflicts = instanceManager.checkConflicts(checkValidation.data.cwd);
+          ws.send(JSON.stringify({
+            type: 'launch:conflicts',
+            payload: conflicts,
+          } satisfies ServerMessage));
+          break;
+        }
 
         case 'launch': {
           const validation = validateLaunchPayload(msg.payload);

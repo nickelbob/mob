@@ -225,6 +225,12 @@
             <span>Browser notifications for waiting instances</span>
           </label>
         </div>
+        <div class="field">
+          <label class="toggle-label">
+            <input type="checkbox" bind:checked={localSettings.general.notificationSound} on:change={markDirty} />
+            <span>Play sound when instance needs input</span>
+          </label>
+        </div>
         <div class="field-row">
           <div class="field">
             <label for="settings-maxcache">Max Cached Terminals</label>

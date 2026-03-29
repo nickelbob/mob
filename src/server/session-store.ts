@@ -41,10 +41,13 @@ export class SessionStore {
       autoResume: opts?.autoResume,
     };
     const filePath = path.join(getSessionsDir(), `${instance.id}.json`);
+    const tmpPath = filePath + '.tmp';
     try {
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+      fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
+      fs.renameSync(tmpPath, filePath);
     } catch (err) {
       log.error(`Failed to save session ${instance.id}:`, err);
+      try { fs.unlinkSync(tmpPath); } catch { /* ok */ }
     }
   }
 

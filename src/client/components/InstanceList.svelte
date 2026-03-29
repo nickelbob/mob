@@ -1,10 +1,21 @@
 <script lang="ts">
   import InstanceCard from './InstanceCard.svelte';
-  import { sortedInstances, wsClient } from '../lib/stores.js';
+  import { sortedInstances, groupedInstances, wsClient } from '../lib/stores.js';
 
   $: resumableInstances = $sortedInstances.filter(
     (i) => i.managed && i.state === 'stopped'
   );
+
+  // Show grouped view when instances span 2+ projects
+  $: useGrouped = $groupedInstances.length > 1;
+
+  // Track collapsed project groups
+  let collapsedGroups: Record<string, boolean> = {};
+
+  function toggleGroup(project: string) {
+    collapsedGroups[project] = !collapsedGroups[project];
+    collapsedGroups = collapsedGroups;
+  }
 
   function resumeAll() {
     for (const instance of resumableInstances) {
@@ -25,9 +36,31 @@
         Resume all ({resumableInstances.length})
       </button>
     {/if}
-    {#each $sortedInstances as instance (instance.id)}
-      <InstanceCard {instance} />
-    {/each}
+
+    {#if useGrouped}
+      {#each $groupedInstances as group (group.project)}
+        <div class="project-group">
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions a11y_no_static_element_interactions -->
+          <div
+            class="project-header"
+            on:click={() => toggleGroup(group.project)}
+          >
+            <span class="collapse-icon" class:collapsed={collapsedGroups[group.project]}>&#9662;</span>
+            <span class="project-name">{group.project}</span>
+            <span class="project-count">{group.instances.length}</span>
+          </div>
+          {#if !collapsedGroups[group.project]}
+            {#each group.instances as instance (instance.id)}
+              <InstanceCard {instance} />
+            {/each}
+          {/if}
+        </div>
+      {/each}
+    {:else}
+      {#each $sortedInstances as instance (instance.id)}
+        <InstanceCard {instance} />
+      {/each}
+    {/if}
   {/if}
 </div>
 
@@ -70,5 +103,54 @@
 
   .resume-all-btn:hover {
     background: rgba(88, 166, 255, 0.15);
+  }
+
+  .project-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .project-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 4px;
+    transition: background 0.1s;
+  }
+
+  .project-header:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .collapse-icon {
+    font-size: 10px;
+    color: var(--text-muted);
+    transition: transform 0.15s;
+    display: inline-block;
+  }
+
+  .collapse-icon.collapsed {
+    transform: rotate(-90deg);
+  }
+
+  .project-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    flex: 1;
+  }
+
+  .project-count {
+    font-size: 10px;
+    color: var(--text-muted);
+    background: rgba(255, 255, 255, 0.08);
+    padding: 1px 6px;
+    border-radius: 8px;
   }
 </style>

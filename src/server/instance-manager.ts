@@ -3,14 +3,16 @@ import { PtyManager } from './pty-manager.js';
 import { DiscoveryService } from './discovery.js';
 import { SessionStore } from './session-store.js';
 import { ScrollbackBuffer } from './scrollback-buffer.js';
-import type { InstanceInfo, InstanceState, LaunchPayload } from '../shared/protocol.js';
+import type { InstanceInfo, InstanceState, LaunchConflicts, LaunchPayload } from '../shared/protocol.js';
 import type { InstanceStatusFile } from './types.js';
 import type { SettingsManager } from './settings-manager.js';
 import { generateInstanceId } from './util/id.js';
 import { STALE_THRESHOLD_MS, HOOK_SILENCE_THRESHOLD_MS } from '../shared/constants.js';
-import { getGitBranch } from './util/platform.js';
+import { getGitBranch, resolvePath } from './util/platform.js';
 import { fetchJiraStatus } from './jira-client.js';
 import { detectStateFromTerminal } from './terminal-state-detector.js';
+import { execFileSync } from 'child_process';
+import { loadProjectConfig, type ProjectConfig } from './project-config.js';
 import { createLogger } from './util/logger.js';
 
 const logger = createLogger('instance-mgr');
@@ -30,6 +32,7 @@ export class InstanceManager extends EventEmitter {
   private managedIds = new Set<string>();
   private autoNameIds = new Set<string>();
   private promptCount = new Map<string, number>();
+  private teardownCommands = new Map<string, string[]>();
   private ptyManager: PtyManager;
   private discovery: DiscoveryService;
   private sessionStore: SessionStore;
@@ -168,34 +171,84 @@ export class InstanceManager extends EventEmitter {
     }
   }
 
+  checkConflicts(cwd: string): LaunchConflicts {
+    const resolved = resolvePath(cwd);
+    const branch = getGitBranch(cwd);
+    const sameDirInstances: LaunchConflicts['sameDirInstances'] = [];
+    const sameBranchInstances: LaunchConflicts['sameBranchInstances'] = [];
+
+    for (const info of this.instances.values()) {
+      if (info.state === 'stopped') continue;
+
+      const infoResolved = resolvePath(info.cwd);
+      if (infoResolved === resolved) {
+        sameDirInstances.push({ id: info.id, name: info.name, state: info.state });
+      }
+
+      if (branch && info.gitBranch && info.gitBranch === branch && infoResolved !== resolved) {
+        sameBranchInstances.push({ id: info.id, name: info.name, branch: info.gitBranch, cwd: info.cwd });
+      }
+    }
+
+    return { cwd, sameDirInstances, sameBranchInstances };
+  }
+
+  cloneRepo(sourceCwd: string, targetDir: string): void {
+    const resolved = resolvePath(sourceCwd);
+    execFileSync('git', ['clone', resolved, targetDir], {
+      encoding: 'utf-8',
+      timeout: 60_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
+
   launch(payload: LaunchPayload): InstanceInfo {
+    // If cloneDir is set, clone the repo first
+    let effectiveCwd = payload.cwd;
+    if (payload.cloneDir) {
+      this.cloneRepo(payload.cwd, payload.cloneDir);
+      effectiveCwd = payload.cloneDir;
+    }
+
+    // Load per-project config (.mob/config.json) and apply defaults
+    const projectConfig = loadProjectConfig(effectiveCwd);
+    const model = payload.model || projectConfig?.defaults?.model;
+    const permissionMode = payload.permissionMode || projectConfig?.defaults?.permissionMode;
+    const autoName = payload.autoName ?? projectConfig?.defaults?.autoName ?? true;
+
     const id = generateInstanceId();
-    const dirName = payload.cwd.split('/').filter(Boolean).pop() || 'instance';
+    const dirName = effectiveCwd.split('/').filter(Boolean).pop() || 'instance';
     const now = Date.now();
     const info: InstanceInfo = {
       id,
-      name: payload.autoName ? dirName : (payload.name || id),
+      name: autoName ? dirName : (payload.name || id),
       managed: true,
-      cwd: payload.cwd,
-      gitBranch: getGitBranch(payload.cwd),
+      cwd: effectiveCwd,
+      gitBranch: getGitBranch(effectiveCwd),
       state: 'launching',
       lastUpdated: now,
       createdAt: now,
-      model: payload.model,
-      permissionMode: payload.permissionMode,
+      model,
+      permissionMode,
     };
 
     this.applyTicketFields(info);
 
     this.instances.set(id, info);
     this.managedIds.add(id);
-    if (payload.autoName) this.autoNameIds.add(id);
+    if (autoName) this.autoNameIds.add(id);
     this.subscribers.set(id, new Set());
 
+    // Store teardown commands for later cleanup
+    if (projectConfig?.teardown?.length) {
+      this.teardownCommands.set(id, projectConfig.teardown);
+    }
+
     try {
-      this.ptyManager.spawn(id, payload.cwd, {
-        model: payload.model,
-        permissionMode: payload.permissionMode,
+      this.ptyManager.spawn(id, effectiveCwd, {
+        model,
+        permissionMode,
+        setupCommands: projectConfig?.setup,
       });
     } catch (err) {
       info.state = 'stopped';
@@ -224,6 +277,21 @@ export class InstanceManager extends EventEmitter {
   kill(instanceId: string): void {
     const info = this.instances.get(instanceId);
     this.log.info(`kill() called: id=${instanceId} name="${info?.name}" trace=${new Error().stack?.split('\n').slice(1, 4).map(s => s.trim()).join(' <- ')}`);
+
+    // Run teardown commands before killing (best-effort, non-blocking)
+    const teardown = this.teardownCommands.get(instanceId);
+    if (teardown?.length && info?.cwd) {
+      for (const cmd of teardown) {
+        try {
+          this.log.info(`Running teardown for ${instanceId}: ${cmd}`);
+          execFileSync('sh', ['-c', cmd], { cwd: info.cwd, timeout: 10_000, stdio: 'ignore' });
+        } catch (err) {
+          this.log.warn(`Teardown command failed for ${instanceId}:`, String(err));
+        }
+      }
+      this.teardownCommands.delete(instanceId);
+    }
+
     this.ptyManager.kill(instanceId);
     if (info) {
       info.state = 'stopped';

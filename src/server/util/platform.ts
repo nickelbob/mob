@@ -37,6 +37,15 @@ export function getScrollbackDir(): string {
   return path.join(getMobDir(), 'scrollback');
 }
 
+/** Resolve ~ and normalize a path for comparison. */
+export function resolvePath(p: string): string {
+  let resolved = p;
+  if (resolved.startsWith('~/') || resolved === '~') {
+    resolved = os.homedir() + resolved.slice(1);
+  }
+  return path.resolve(resolved);
+}
+
 export function getGitBranch(cwd: string): string | undefined {
   try {
     let resolved = cwd;

@@ -2,6 +2,7 @@
 export type ClientMessage =
   | { type: 'sync' }
   | { type: 'launch'; payload: LaunchPayload }
+  | { type: 'launch:check'; payload: LaunchPayload }
   | { type: 'kill'; payload: { instanceId: string } }
   | { type: 'resume'; payload: { instanceId: string } }
   | { type: 'dismiss'; payload: { instanceId: string } }
@@ -17,6 +18,7 @@ export interface LaunchPayload {
   cwd: string;
   model?: string;
   permissionMode?: string;
+  cloneDir?: string;
 }
 
 // Server → Client messages
@@ -29,7 +31,14 @@ export type ServerMessage =
   | { type: 'terminal:exit'; payload: { instanceId: string; exitCode: number } }
   | { type: 'error'; payload: { message: string; context?: string } }
   | { type: 'instance:select'; payload: { instanceId: string } }
-  | { type: 'update:status'; payload: { status: 'installing' | 'success' | 'failed'; error?: string } };
+  | { type: 'update:status'; payload: { status: 'installing' | 'success' | 'failed'; error?: string } }
+  | { type: 'launch:conflicts'; payload: LaunchConflicts };
+
+export interface LaunchConflicts {
+  cwd: string;
+  sameDirInstances: Array<{ id: string; name: string; state: InstanceState }>;
+  sameBranchInstances: Array<{ id: string; name: string; branch: string; cwd: string }>;
+}
 
 export interface InstanceInfo {
   id: string;

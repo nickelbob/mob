@@ -34,6 +34,7 @@ export interface Settings {
     maxCachedTerminals: number;
     staleThresholdSecs: number;
     notifications: boolean;
+    notificationSound: boolean;
   };
   jira: {
     baseUrl: string;
@@ -78,6 +79,7 @@ export const DEFAULT_SETTINGS: Settings = {
     maxCachedTerminals: 20,
     staleThresholdSecs: 30,
     notifications: true,
+    notificationSound: false,
   },
   jira: {
     baseUrl: '',
