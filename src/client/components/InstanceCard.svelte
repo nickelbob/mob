@@ -93,7 +93,7 @@
 
   {#if editing}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="edit-panel" on:click|stopPropagation on:keydown={handleEditKeydown}>
+    <div class="edit-panel" on:click|stopPropagation on:mousedown|stopPropagation on:keydown={handleEditKeydown}>
       <div class="edit-field">
         <label>Name</label>
         <input type="text" bind:value={editName} />
