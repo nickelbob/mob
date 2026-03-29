@@ -225,8 +225,15 @@
     browsing = false;
   }
 
-  function autofocus(node: HTMLElement) {
-    node.focus();
+  function autofocus(node: HTMLInputElement) {
+    // Force-clear any browser autofill after a frame, then focus
+    requestAnimationFrame(() => {
+      if (node.value && !get(settings).launch.cwd) {
+        node.value = '';
+        cwd = '';
+      }
+      node.focus();
+    });
   }
 
   function handleKeydown(e: KeyboardEvent) {
