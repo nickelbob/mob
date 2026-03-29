@@ -240,6 +240,9 @@
   <div class="dialog" on:click|stopPropagation={() => { showSuggestions = false; }} role="document">
     <h2>Launch Claude Instance</h2>
 
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <form autocomplete="off" on:submit|preventDefault={launch}>
+
     <div class="field">
       <label for="mob-launch-cwd">Working Directory *</label>
       <div class="autocomplete-wrap">
@@ -254,7 +257,9 @@
             on:focus={() => { if (suggestions.length) showSuggestions = true; }}
             on:blur={() => { setTimeout(() => showSuggestions = false, 200); }}
             placeholder="~/Development/my-project"
-            autocomplete="nope"
+            autocomplete="off"
+            data-form-type="other"
+            data-lpignore="true"
             use:autofocus
           />
           {#if canBrowse}
@@ -321,6 +326,8 @@
         </select>
       </div>
     </div>
+
+    </form>
 
     {#if showCwdMissing}
       <div class="conflict-warning">
