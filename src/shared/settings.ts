@@ -16,6 +16,8 @@ export interface Settings {
     resumeInstance: string;
     killInstance: string;
     dismissInstance: string;
+    collapseGroup: string;
+    expandGroup: string;
     openSettings: string;
   };
   launch: {
@@ -61,6 +63,8 @@ export const DEFAULT_SETTINGS: Settings = {
     resumeInstance: 'Alt+KeyR',
     killInstance: 'Alt+KeyW',
     dismissInstance: 'Alt+KeyX',
+    collapseGroup: 'Alt+Shift+ArrowLeft',
+    expandGroup: 'Alt+Shift+ArrowRight',
     openSettings: 'Alt+Comma',
   },
   launch: {

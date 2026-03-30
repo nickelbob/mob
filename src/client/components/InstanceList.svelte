@@ -6,8 +6,8 @@
     (i) => i.managed && i.state === 'stopped'
   );
 
-  // Show grouped view when instances span 2+ projects
-  $: useGrouped = $groupedInstances.length > 1;
+  // Show grouped view when 2+ groups exist OR any instance has an explicit project set
+  $: useGrouped = $groupedInstances.length > 1 || $sortedInstances.some(i => !!i.project);
 
   // Determine which project group contains the selected instance
   $: selectedProject = (() => {

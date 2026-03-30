@@ -23,6 +23,8 @@
     toggleSidebar: 'Toggle Sidebar',
     cycleInstanceDown: 'Next Instance',
     cycleInstanceUp: 'Previous Instance',
+    collapseGroup: 'Collapse Group',
+    expandGroup: 'Expand Group',
     jumpToInstance1: 'Jump to Instance 1',
     jumpToInstance2: 'Jump to Instance 2',
     jumpToInstance3: 'Jump to Instance 3',

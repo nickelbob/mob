@@ -167,12 +167,15 @@
         navigator.clipboard.writeText(terminal!.getSelection());
         return false;
       }
-      if (e.ctrlKey && e.key === 'v') {
+      if (e.ctrlKey && e.key === 'v' && e.type === 'keydown') {
         navigator.clipboard.readText().then((text) => {
           if (text && !isStopped) {
             wsClient.send({ type: 'terminal:input', payload: { instanceId: inst.id, data: text } });
           }
         });
+        return false;
+      }
+      if (e.ctrlKey && e.key === 'v' && e.type !== 'keydown') {
         return false;
       }
       return true;

@@ -95,14 +95,14 @@
       showSettingsDialog.update(v => !v);
     }
     // Collapse/expand the project group containing the selected instance
-    if (e.key === 'ArrowLeft' && (isMac ? e.altKey : e.altKey)) {
+    if (matchesShortcut(e, s.collapseGroup, isMac)) {
       const project = getSelectedProject();
       if (project !== null) {
         e.preventDefault();
         collapsedGroups.update(g => ({ ...g, [project]: true }));
       }
     }
-    if (e.key === 'ArrowRight' && (isMac ? e.altKey : e.altKey)) {
+    if (matchesShortcut(e, s.expandGroup, isMac)) {
       const project = getSelectedProject();
       if (project !== null) {
         e.preventDefault();
