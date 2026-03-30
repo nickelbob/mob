@@ -3,6 +3,7 @@
   import { Terminal } from 'xterm';
   import { FitAddon } from 'xterm-addon-fit';
   import { selectedInstance, selectedInstanceId, wsClient, wsConnected, onInstanceRemove, settings } from '../lib/stores.js';
+  import { matchesShortcut } from '../lib/shortcuts.js';
   import type { InstanceInfo } from '../lib/types.js';
 
   let terminalEl: HTMLDivElement;
@@ -161,21 +162,28 @@
 
     // Handle keyboard shortcuts
     terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-      // Let Alt combos bubble to App.svelte for shortcuts
-      if (e.altKey) return false;
+      // Only intercept Alt combos that match a configured dashboard shortcut;
+      // let others (e.g. Alt+M for Claude mode switch) pass through to the terminal
+      if (e.altKey) {
+        const isMac = navigator.platform.includes('Mac');
+        const s = get(settings).shortcuts;
+        for (const shortcut of Object.values(s)) {
+          if (matchesShortcut(e, shortcut as string, isMac)) return false;
+        }
+      }
       if (e.ctrlKey && e.key === 'c' && terminal!.hasSelection()) {
         navigator.clipboard.writeText(terminal!.getSelection());
         return false;
       }
-      if (e.ctrlKey && e.key === 'v' && e.type === 'keydown') {
-        navigator.clipboard.readText().then((text) => {
-          if (text && !isStopped) {
-            wsClient.send({ type: 'terminal:input', payload: { instanceId: inst.id, data: text } });
-          }
-        });
-        return false;
-      }
-      if (e.ctrlKey && e.key === 'v' && e.type !== 'keydown') {
+      if (e.ctrlKey && e.key === 'v') {
+        if (e.type === 'keydown') {
+          e.preventDefault();
+          navigator.clipboard.readText().then((text) => {
+            if (text && !isStopped) {
+              wsClient.send({ type: 'terminal:input', payload: { instanceId: inst.id, data: text } });
+            }
+          });
+        }
         return false;
       }
       return true;

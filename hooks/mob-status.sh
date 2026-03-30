@@ -50,7 +50,7 @@ case "$HOOK_EVENT" in
   "Stop")         STATE="idle" ;;
   "PreToolUse")   STATE="running" ;;
   "PostToolUse")  STATE="running" ;;
-  "Notification") STATE="waiting" ;;
+  "Notification") STATE="idle" ;;
   "UserPromptSubmit") STATE="idle" ;;
   *)              STATE="running" ;;
 esac

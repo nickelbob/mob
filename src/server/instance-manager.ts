@@ -20,6 +20,32 @@ const logger = createLogger('instance-mgr');
 
 const JIRA_KEY_RE = /([A-Z][A-Z0-9]+-\d+)/;
 
+// OSC 2 = Set Window Title: \x1B]2;...title...\x07  (or \x1B\\ as terminator)
+const OSC2_RE = /\x1B\]2;([^\x07\x1B]*?)(?:\x07|\x1B\\)/;
+const OSC2_RE_GLOBAL = /\x1B\]2;([^\x07\x1B]*?)(?:\x07|\x1B\\)/g;
+
+function cleanTerminalTitle(raw: string): string | null {
+  let title = raw.trim();
+  if (title.toLowerCase().startsWith('claude:')) title = title.slice(7).trim();
+  return title || null;
+}
+
+function extractTerminalTitle(data: string): string | null {
+  const match = data.match(OSC2_RE);
+  if (!match) return null;
+  return cleanTerminalTitle(match[1]);
+}
+
+function extractLastTerminalTitle(data: string): string | null {
+  let last: string | null = null;
+  let match;
+  while ((match = OSC2_RE_GLOBAL.exec(data)) !== null) {
+    const title = cleanTerminalTitle(match[1]);
+    if (title) last = title;
+  }
+  return last;
+}
+
 export function extractJiraKey(branch: string | undefined): string | null {
   if (!branch) return null;
   const m = branch.match(JIRA_KEY_RE);
@@ -97,6 +123,19 @@ export class InstanceManager extends EventEmitter {
 
     this.ptyManager.on('data', (instanceId: string, data: string) => {
       this.scrollbackBuffer.append(instanceId, data);
+
+      // Capture terminal title (OSC 2) set by Claude via printf '\e]2;...\a'
+      if (this.autoNameIds.has(instanceId) && data.includes('\x1B]2;')) {
+        const title = extractTerminalTitle(data);
+        if (title) {
+          const info = this.instances.get(instanceId);
+          if (info && info.name !== title) {
+            info.name = title;
+            info.lastUpdated = Date.now();
+            this.emit('update', info);
+          }
+        }
+      }
     });
 
     this.ptyManager.on('exit', (instanceId: string, exitCode: number) => {
@@ -433,13 +472,22 @@ export class InstanceManager extends EventEmitter {
   handleHookUpdate(data: InstanceStatusFile): void {
     const existing = this.instances.get(data.id);
 
-    // Completion notification: Notification immediately after Stop = "task done", not permission prompt.
-    // Clear hookEvent so lastHookEvent stays 'Stop' — both POST and file-watcher deliver
-    // each event, so the duplicate must also be suppressed.
-    if (data.hookEvent === 'Notification' && existing?.lastHookEvent === 'Stop') {
-      this.log.info(`suppressing waiting state for ${data.id} — Notification after Stop (task completion, not permission prompt)`);
-      data.state = 'idle';
-      data.hookEvent = undefined;
+    // Notification events don't reliably indicate "needs input" — Claude fires them for
+    // completion messages too. Verify via terminal output for managed instances.
+    if (data.hookEvent === 'Notification') {
+      if (this.managedIds.has(data.id)) {
+        const tail = this.scrollbackBuffer.getTail(data.id, 500);
+        const detected = detectStateFromTerminal(tail);
+        if (detected === 'waiting') {
+          this.log.info(`Notification for ${data.id} — terminal confirms waiting`);
+          data.state = 'waiting';
+        } else {
+          this.log.info(`Notification for ${data.id} — terminal does not confirm waiting, keeping ${existing?.state || 'idle'}`);
+          data.state = existing?.state || 'idle';
+        }
+      } else {
+        data.state = existing?.state || 'idle';
+      }
     }
 
     if (data.state === 'stopped') {
@@ -555,6 +603,18 @@ export class InstanceManager extends EventEmitter {
               info.gitBranch = branch;
               this.emit('update', info);
             }
+          }
+        }
+
+        // Periodic title refresh from scrollback (~every 3 min)
+        if (this.autoNameIds.has(id) && this.staleCheckCycle % 18 === 0) {
+          const tail = this.scrollbackBuffer.getTail(id, 2000);
+          const title = extractLastTerminalTitle(tail);
+          if (title && title !== info.name) {
+            this.log.info(`title refresh: ${id} "${info.name}" → "${title}"`);
+            info.name = title;
+            info.lastUpdated = now;
+            this.emit('update', info);
           }
         }
 
