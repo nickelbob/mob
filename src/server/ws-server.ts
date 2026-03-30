@@ -321,10 +321,10 @@ export function createWsServer(
         }
 
         default:
-          log.warn( `Client #${clientId}: unknown message type`);
+          log.warn( `Client #${clientId}: unknown message type: ${(msg as any).type}`);
           ws.send(JSON.stringify({
             type: 'error',
-            payload: { message: `Unknown message type` },
+            payload: { message: `Unknown message type: ${(msg as any).type}` },
           }));
       }
     });
