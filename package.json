@@ -1,6 +1,6 @@
 {
   "name": "mob-coordinator",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Local web dashboard for coordinating multiple Claude Code CLI sessions",
   "type": "module",
   "license": "MIT",
@@ -25,7 +25,7 @@
   "scripts": {
     "dev": "concurrently \"tsx src/server/index.ts\" \"vite\"",
     "build": "vite build && tsc -p tsconfig.node.json",
-    "start": "node dist/server/index.js",
+    "start": "node dist/server/server/index.js",
     "install-hooks": "tsx scripts/install-hooks.ts",
     "uninstall-hooks": "tsx scripts/uninstall-hooks.ts",
     "test": "vitest run",

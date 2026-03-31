@@ -23,7 +23,7 @@ export function createApp(instanceManager: InstanceManager, settingsManager: Set
   });
 
   // Serve static frontend in production (only if built)
-  const clientDir = path.join(__dirname, '..', 'client');
+  const clientDir = path.join(__dirname, '..', '..', 'client');
   const indexHtml = path.join(clientDir, 'index.html');
   const hasBuiltClient = fs.existsSync(indexHtml);
 
