@@ -3,7 +3,8 @@
 # Reads hook event from stdin, writes instance status to ~/.mob/instances/{id}.json
 # and POSTs to the dashboard for instant updates.
 
-set -euo pipefail
+set -uo pipefail
+trap 'exit 0' ERR
 
 MOB_DIR="$HOME/.mob"
 INSTANCES_DIR="$MOB_DIR/instances"

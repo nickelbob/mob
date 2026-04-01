@@ -4,6 +4,8 @@
 // to detect and fix that.
 
 const { execSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const toInstall = [];
@@ -52,6 +54,9 @@ try {
   }
 }
 
+// If mob hooks are already installed, update them to pick up any script changes
+updateMobHooksIfInstalled();
+
 if (toInstall.length > 0) {
   console.log(`\nInstalling missing native dependencies: ${toInstall.join(', ')}`);
   try {
@@ -64,5 +69,44 @@ if (toInstall.length > 0) {
     console.error('\nFailed to auto-install native dependencies.');
     console.error('Try manually: npm install ' + toInstall.join(' '));
     console.error('');
+  }
+}
+
+function updateMobHooksIfInstalled() {
+  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+  try {
+    if (!fs.existsSync(settingsPath)) return;
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+    if (!settings.hooks) return;
+
+    const hookScript = path.resolve(__dirname, '..', 'hooks', 'mob-status.sh');
+    const hookScriptWin = path.resolve(__dirname, '..', 'hooks', 'mob-status.ps1');
+    const newCommand = process.platform === 'win32'
+      ? `"${path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')}" -NoProfile -ExecutionPolicy Bypass -File "${hookScriptWin}"`
+      : `bash "${hookScript}" || true`;
+
+    let updated = false;
+    for (const event of Object.keys(settings.hooks)) {
+      const entries = settings.hooks[event];
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        if (!entry.hooks || !Array.isArray(entry.hooks)) continue;
+        for (const hook of entry.hooks) {
+          if (hook.type === 'command' && typeof hook.command === 'string' && hook.command.includes('mob-status')) {
+            if (hook.command !== newCommand) {
+              hook.command = newCommand;
+              updated = true;
+            }
+          }
+        }
+      }
+    }
+
+    if (updated) {
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+      console.log('Mob hooks updated in ~/.claude/settings.json');
+    }
+  } catch {
+    // Best-effort — don't fail the install if hook update fails
   }
 }

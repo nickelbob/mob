@@ -21,7 +21,7 @@ function getHookCommand(): string {
     const psPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     return `"${psPath}" -NoProfile -ExecutionPolicy Bypass -File "${HOOK_SCRIPT_WIN}"`;
   }
-  return `bash "${HOOK_SCRIPT}"`;
+  return `bash "${HOOK_SCRIPT}" || true`;
 }
 
 function main(): void {
