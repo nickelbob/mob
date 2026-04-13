@@ -11,6 +11,7 @@ export type ClientMessage =
   | { type: 'terminal:input'; payload: { instanceId: string; data: string } }
   | { type: 'terminal:resize'; payload: { instanceId: string; cols: number; rows: number } }
   | { type: 'update:install' }
+  | { type: 'update:check' }
   | { type: 'instance:edit'; payload: InstanceEditPayload };
 
 export interface LaunchPayload {
@@ -43,6 +44,7 @@ export type ServerMessage =
   | { type: 'error'; payload: { message: string; context?: string } }
   | { type: 'instance:select'; payload: { instanceId: string } }
   | { type: 'update:status'; payload: { status: 'installing' | 'success' | 'failed'; error?: string } }
+  | { type: 'update:available'; payload: { current: string; latest: string } | null }
   | { type: 'launch:conflicts'; payload: LaunchConflicts };
 
 export interface LaunchConflicts {

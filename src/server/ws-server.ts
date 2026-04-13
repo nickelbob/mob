@@ -5,7 +5,7 @@ import type { PtyManager } from './pty-manager.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import { validateLaunchPayload, validateEditPayload } from './util/sanitize.js';
 import { createLogger } from './util/logger.js';
-import { performUpdate, getVersion } from './update-checker.js';
+import { performUpdate, getVersion, checkForUpdate, clearUpdateCache } from './update-checker.js';
 
 const log = createLogger('ws');
 
@@ -272,6 +272,16 @@ export function createWsServer(
             msg.payload.rows,
           );
           break;
+
+        case 'update:check': {
+          log.info(`Client #${clientId} requested update check`);
+          clearUpdateCache();
+          checkForUpdate().then((result) => {
+            updateInfo = result;
+            ws.send(JSON.stringify({ type: 'update:available', payload: result } satisfies ServerMessage));
+          });
+          break;
+        }
 
         case 'update:install': {
           if (isUpdating) {

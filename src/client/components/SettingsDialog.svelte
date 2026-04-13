@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { showSettingsDialog, settings, sidebarCollapsed } from '../lib/stores.js';
+  import { onDestroy } from 'svelte';
+  import { showSettingsDialog, settings, sidebarCollapsed, serverVersion, updateAvailable, wsClient } from '../lib/stores.js';
   import { saveSettings } from '../lib/settings-client.js';
   import { eventToShortcut, formatShortcut } from '../lib/shortcuts.js';
   import { DEFAULT_SETTINGS } from '../../shared/settings.js';
@@ -14,6 +15,11 @@
     localSettings.jira = { baseUrl: '', email: '', apiToken: '' };
   }
   let dirty = false;
+  let checking = false;
+  const unsubUpdate = wsClient.onMessage((msg) => {
+    if (msg.type === 'update:available') checking = false;
+  });
+  onDestroy(unsubUpdate);
 
   // Shortcut capture state
   let capturingKey: string | null = null;
@@ -239,6 +245,19 @@
             <input id="settings-maxcache" type="number" min="1" max="100" bind:value={localSettings.general.maxCachedTerminals} on:input={markDirty} />
           </div>
         </div>
+        <div class="update-section">
+          <span class="version-label">Version: {$serverVersion || '?'}</span>
+          {#if $updateAvailable}
+            <span class="update-available">v{$updateAvailable.latest} available</span>
+          {/if}
+          <button class="check-update-btn" disabled={checking} on:click={() => {
+            checking = true;
+            wsClient.send({ type: 'update:check' });
+            setTimeout(() => { checking = false; }, 5000);
+          }}>
+            {checking ? 'Checking...' : 'Check for updates'}
+          </button>
+        </div>
       {:else if activeTab === 'jira'}
         <div class="field">
           <label for="settings-jira-url">JIRA Base URL</label>
@@ -462,5 +481,46 @@
 
   .close-btn:hover {
     background: var(--accent-hover);
+  }
+
+  .update-section {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+
+  .version-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .update-available {
+    font-size: 12px;
+    color: var(--green, #4caf50);
+    font-weight: 600;
+  }
+
+  .check-update-btn {
+    margin-left: auto;
+    padding: 4px 12px;
+    font-size: 12px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+
+  .check-update-btn:hover:not(:disabled) {
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+  }
+
+  .check-update-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 </style>

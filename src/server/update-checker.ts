@@ -42,6 +42,10 @@ function isNewer(latest: string, current: string): boolean {
 
 let cached: { current: string; latest: string } | null | undefined;
 
+export function clearUpdateCache(): void {
+  cached = undefined;
+}
+
 export async function checkForUpdate(): Promise<{ current: string; latest: string } | null> {
   if (cached !== undefined) return cached;
   try {

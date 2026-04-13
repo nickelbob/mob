@@ -179,6 +179,9 @@ wsClient.onMessage((msg) => {
         updateError.set(msg.payload.error);
       }
       break;
+    case 'update:available':
+      updateAvailable.set(msg.payload);
+      break;
     case 'launch:conflicts':
       launchConflicts.set(msg.payload);
       break;
