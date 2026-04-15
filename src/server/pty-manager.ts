@@ -3,7 +3,7 @@ import os from 'os';
 import { EventEmitter } from 'events';
 import treeKill from 'tree-kill';
 import { getDefaultShell, getShellArgs } from './util/platform.js';
-import { shellQuote, isValidModel, isValidPermissionMode, isValidSessionId } from './util/sanitize.js';
+import { isValidModel, isValidPermissionMode, isValidSessionId } from './util/sanitize.js';
 import { createLogger } from './util/logger.js';
 import type { IPty } from '@lydell/node-pty';
 
@@ -75,21 +75,24 @@ export class PtyManager extends EventEmitter {
     log.info(`PTY spawned: pid=${p.pid}`);
     this.ptys.set(instanceId, p);
 
-    // Build claude command with validated & shell-quoted arguments
+    // Build claude command. All interpolated values are validated against strict
+    // allowlists (see sanitize.ts), so they contain no shell metacharacters and
+    // don't need quoting — which matters on Windows cmd.exe, where POSIX-style
+    // single quotes would be passed to claude literally.
     let cmd = 'claude';
     if (opts?.claudeSessionId && isValidSessionId(opts.claudeSessionId)) {
-      cmd += ` --resume ${shellQuote(opts.claudeSessionId)}`;
+      cmd += ` --resume ${opts.claudeSessionId}`;
     } else if (opts?.resume) {
       cmd += ' --continue';
     }
     if (!opts?.claudeSessionId && !opts?.resume) {
-      cmd += ` --name ${shellQuote('mob-' + instanceId)}`;
+      cmd += ` --name mob-${instanceId}`;
     }
     if (opts?.model && isValidModel(opts.model)) {
-      cmd += ` --model ${shellQuote(opts.model)}`;
+      cmd += ` --model ${opts.model}`;
     }
     if (opts?.permissionMode && isValidPermissionMode(opts.permissionMode)) {
-      cmd += ` --permission-mode ${shellQuote(opts.permissionMode)}`;
+      cmd += ` --permission-mode ${opts.permissionMode}`;
     }
 
     // Wait for shell prompt before injecting command (with timeout fallback)
