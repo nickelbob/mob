@@ -148,7 +148,9 @@ export function createWsServer(
         return;
       }
 
-      log.info( `Client #${clientId} → ${msg.type}`, msg.type === 'terminal:input' ? '(input data)' : ('payload' in msg ? (msg as any).payload : ''));
+      if (msg.type !== 'terminal:input') {
+        log.info( `Client #${clientId} → ${msg.type}`, 'payload' in msg ? (msg as any).payload : '');
+      }
 
       switch (msg.type) {
         case 'sync':

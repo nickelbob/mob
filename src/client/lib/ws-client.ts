@@ -44,7 +44,9 @@ export class WsClient {
     this.ws.onmessage = (event) => {
       try {
         const msg: ServerMessage = JSON.parse(event.data);
-        log('info', `← ${msg.type}`, msg.payload);
+        if (msg.type !== 'terminal:output' && msg.type !== 'terminal:scrollback') {
+          log('info', `← ${msg.type}`, msg.payload);
+        }
         for (const handler of this.handlers) {
           handler(msg);
         }
@@ -78,7 +80,9 @@ export class WsClient {
 
   send(msg: ClientMessage): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      log('info', `→ ${msg.type}`, 'payload' in msg ? (msg as any).payload : '');
+      if (msg.type !== 'terminal:input') {
+        log('info', `→ ${msg.type}`, 'payload' in msg ? (msg as any).payload : '');
+      }
       this.ws.send(JSON.stringify(msg));
     } else {
       log('warn', `Cannot send "${msg.type}" — not connected (readyState=${this.ws?.readyState})`);

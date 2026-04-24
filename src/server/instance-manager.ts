@@ -481,40 +481,17 @@ export class InstanceManager extends EventEmitter {
     const existing = this.instances.get(data.id);
 
     // --- Hook-event state refinement ---
+    // Trust hook-reported states directly. The hook scripts already map events
+    // to correct states (PreToolUse→running, Notification→idle, Stop→idle, etc.).
+    // Only override for specific cases where we have better information.
 
     // PreToolUse with AskUserQuestion: Claude is about to ask a question.
     if (data.hookEvent === 'PreToolUse' && data.currentTool === 'AskUserQuestion') {
       data.state = 'waiting';
     }
-    // Notification: Claude finished its turn. Check terminal to distinguish idle vs waiting.
-    else if (data.hookEvent === 'Notification') {
-      if (this.managedIds.has(data.id)) {
-        const tail = this.scrollbackBuffer.getTail(data.id, 500);
-        const detected = detectStateFromTerminal(tail);
-        if (detected === 'waiting') {
-          this.log.info(`Notification for ${data.id} — terminal confirms waiting`);
-          data.state = 'waiting';
-        } else {
-          this.log.info(`Notification for ${data.id} — terminal says ${detected || 'unknown'}, defaulting to idle`);
-          data.state = 'idle';
-        }
-      } else {
-        data.state = 'idle';
-      }
-    }
-    // Stop: Claude's turn ended (user interrupt or natural). Check terminal for waiting.
-    else if (data.hookEvent === 'Stop') {
-      if (this.managedIds.has(data.id)) {
-        const tail = this.scrollbackBuffer.getTail(data.id, 500);
-        const detected = detectStateFromTerminal(tail);
-        if (detected === 'waiting') {
-          this.log.info(`Stop for ${data.id} — terminal confirms waiting`);
-          data.state = 'waiting';
-        } else {
-          data.state = 'idle';
-        }
-      }
-    }
+    // Notification/Stop: hook already sets idle — trust it, don't override with
+    // terminal scraping (which caused false "waiting" from words in output).
+    // Terminal-based detection is only used as a stale fallback (see startStaleCheck).
 
     if (data.state === 'stopped') {
       this.log.info(`hook update with stopped state: id=${data.id} managed=${this.managedIds.has(data.id)} ptyAlive=${this.ptyManager.has(data.id)}`);

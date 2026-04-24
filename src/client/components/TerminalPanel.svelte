@@ -222,17 +222,22 @@
       }
     });
 
+    let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
     resizeObserver = new ResizeObserver(() => {
-      if (fitAddon && terminal) {
-        fitAddon.fit();
-        scrollToBottomIfNeeded();
-        if (currentSubscription) {
-          wsClient.send({
-            type: 'terminal:resize',
-            payload: { instanceId: currentSubscription, cols: terminal.cols, rows: terminal.rows },
-          });
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      resizeDebounceTimer = setTimeout(() => {
+        resizeDebounceTimer = null;
+        if (fitAddon && terminal) {
+          fitAddon.fit();
+          scrollToBottomIfNeeded();
+          if (currentSubscription) {
+            wsClient.send({
+              type: 'terminal:resize',
+              payload: { instanceId: currentSubscription, cols: terminal.cols, rows: terminal.rows },
+            });
+          }
         }
-      }
+      }, 50);
     });
     if (terminalEl) resizeObserver.observe(terminalEl);
 
