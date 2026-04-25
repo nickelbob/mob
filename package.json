@@ -1,6 +1,6 @@
 {
   "name": "mob-coordinator",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "description": "Local web dashboard for coordinating multiple Claude Code CLI sessions",
   "type": "module",
   "license": "MIT",
