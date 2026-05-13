@@ -23,7 +23,8 @@
     "mob": "./bin/mob.js"
   },
   "scripts": {
-    "dev": "concurrently \"tsx src/server/index.ts\" \"vite\"",
+    "dev": "tsx scripts/dev-runner.ts",
+    "dev:single": "concurrently \"tsx src/server/index.ts\" \"vite\"",
     "build": "vite build && tsc -p tsconfig.node.json",
     "start": "node dist/server/server/index.js",
     "install-hooks": "tsx scripts/install-hooks.ts",

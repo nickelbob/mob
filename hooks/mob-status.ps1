@@ -61,14 +61,14 @@ try { $GitBranch = git -C "$Cwd" branch --show-current 2>$null } catch {}
 
 # State from event
 $State = switch ($HookEvent) {
-    "SessionStart" { "running" }
+    "SessionStart" { "idle" }
     "SessionEnd"   { "stopped" }
     "Stop"         { "idle" }
     "PreToolUse"   { "running" }
     "PostToolUse"  { "running" }
     "Notification" { "idle" }
     "UserPromptSubmit" { "running" }
-    default        { "running" }
+    default        { "idle" }
 }
 Log "State=$State"
 
@@ -78,8 +78,9 @@ $ToolName = if ($Data.tool_name) { "$($Data.tool_name)" } else { "" }
 # Claude Code sends the prompt in the "prompt" field
 $Topic = ""
 if ($HookEvent -eq "UserPromptSubmit" -and $Data.prompt) {
-    $Topic = ("$($Data.prompt)" -split "`n")[0]
-    if ($Topic.Length -gt 80) { $Topic = $Topic.Substring(0, 80) }
+    # Collapse newlines + trim to ~400 chars (enough for ~4 wrapped lines in the UI)
+    $Topic = ("$($Data.prompt)" -replace "`r?`n", " ")
+    if ($Topic.Length -gt 400) { $Topic = $Topic.Substring(0, 400) }
     Log "Topic=$Topic"
 }
 

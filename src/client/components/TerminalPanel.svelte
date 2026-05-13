@@ -179,8 +179,12 @@
         if (e.type === 'keydown') {
           e.preventDefault();
           navigator.clipboard.readText().then((text) => {
-            if (text && !isStopped) {
-              wsClient.send({ type: 'terminal:input', payload: { instanceId: inst.id, data: text } });
+            if (text && !isStopped && terminal) {
+              // Use xterm's paste() so bracketed paste mode (\x1B[200~...\x1B[201~)
+              // is applied when Claude has it enabled. Without this wrapping,
+              // newlines in the pasted text get treated as Enter and each line
+              // gets submitted as a separate prompt — only the last one survives.
+              terminal.paste(text);
             }
           });
         }
@@ -217,6 +221,12 @@
         }
       }
       if (msg.type === 'terminal:scrollback' && msg.payload.instanceId === currentSubscription) {
+        // Clear before writing scrollback so we don't overlay onto existing
+        // content in a cached terminal. Use clear() (not reset()) — reset()
+        // would wipe terminal modes like alt-screen and bracketed paste,
+        // but the PTY/Claude doesn't know we reset, so future output would
+        // land in the wrong mode and produce corrupted formatting.
+        terminal?.clear();
         terminal?.write(msg.payload.data);
         scrollToBottomIfNeeded();
       }
@@ -328,6 +338,12 @@
           Waiting for your input
         </div>
       {/if}
+      {#if $selectedInstance.lastPrompt}
+        <div class="last-prompt" title={$selectedInstance.lastPrompt}>
+          <span class="last-prompt-label">Last prompt</span>
+          <span class="last-prompt-text">{$selectedInstance.lastPrompt}</span>
+        </div>
+      {/if}
       <div class="terminal-container" bind:this={terminalEl}></div>
     {:else}
       <div class="external-info">
@@ -366,6 +382,45 @@
     flex-direction: column;
     background: var(--bg-primary);
     overflow: hidden;
+    position: relative;
+  }
+
+  .last-prompt {
+    position: absolute;
+    top: 8px;
+    right: 16px;
+    z-index: 10;
+    max-width: 100ch;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 12px;
+    background: rgba(22, 27, 34, 0.94);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    backdrop-filter: blur(4px);
+    pointer-events: auto;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+
+  .last-prompt-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  .last-prompt-text {
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--text-primary);
+    overflow: hidden;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+    -webkit-box-orient: vertical;
   }
 
   .waiting-banner {

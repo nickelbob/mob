@@ -46,14 +46,14 @@ HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // .event // empty' 2>/dev/
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || echo "")
 
 case "$HOOK_EVENT" in
-  "SessionStart") STATE="running" ;;
+  "SessionStart") STATE="idle" ;;
   "SessionEnd")   STATE="stopped" ;;
   "Stop")         STATE="idle" ;;
   "PreToolUse")   STATE="running" ;;
   "PostToolUse")  STATE="running" ;;
   "Notification") STATE="idle" ;;
   "UserPromptSubmit") STATE="running" ;;
-  *)              STATE="running" ;;
+  *)              STATE="idle" ;;
 esac
 
 # Extract user prompt from UserPromptSubmit for auto-naming
@@ -61,8 +61,8 @@ TOPIC=""
 if [ "$HOOK_EVENT" = "UserPromptSubmit" ]; then
   RAW_MSG=$(echo "$INPUT" | jq -r '.prompt // .message // empty' 2>/dev/null || echo "")
   if [ -n "$RAW_MSG" ]; then
-    # Truncate to first 80 chars, first line only
-    TOPIC=$(echo "$RAW_MSG" | head -1 | cut -c1-80)
+    # Collapse newlines + trim to ~400 chars (enough for ~4 wrapped lines in the UI)
+    TOPIC=$(echo "$RAW_MSG" | tr '\n' ' ' | cut -c1-400)
   fi
 fi
 

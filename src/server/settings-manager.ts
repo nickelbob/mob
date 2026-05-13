@@ -74,22 +74,29 @@ export class SettingsManager {
     const copy = structuredClone(this.settings);
     if (copy.jira) {
       copy.jira.apiToken = this.settings.jira?.apiToken ? '••••' : '';
+      copy.jira.oauthClientSecret = this.settings.jira?.oauthClientSecret ? '••••' : '';
+      copy.jira.oauthAccessToken = this.settings.jira?.oauthAccessToken ? '••••' : '';
+      copy.jira.oauthRefreshToken = this.settings.jira?.oauthRefreshToken ? '••••' : '';
     }
     return copy;
   }
 
   update(partial: Record<string, any>): Settings {
-    // If jira.apiToken comes in as the redacted sentinel, preserve existing token
-    if (partial.jira && partial.jira.apiToken === '••••') {
-      partial.jira.apiToken = this.settings.jira.apiToken;
+    // Preserve existing secrets when redacted sentinel is sent from the UI
+    if (partial.jira) {
+      if (partial.jira.apiToken === '••••') partial.jira.apiToken = this.settings.jira.apiToken;
+      if (partial.jira.oauthClientSecret === '••••') partial.jira.oauthClientSecret = this.settings.jira.oauthClientSecret;
+      if (partial.jira.oauthAccessToken === '••••') partial.jira.oauthAccessToken = this.settings.jira.oauthAccessToken;
+      if (partial.jira.oauthRefreshToken === '••••') partial.jira.oauthRefreshToken = this.settings.jira.oauthRefreshToken;
     }
 
-    const merged = mergeWithDefaults({ ...this.settings, ...partial });
-
-    // Deep merge: for each section in partial, overlay onto current
+    // Deep merge: start from current settings, overlay each section's partial fields
+    const merged: any = structuredClone(this.settings);
     for (const section of Object.keys(partial)) {
-      if (typeof partial[section] === 'object' && section in merged) {
-        Object.assign((merged as any)[section], partial[section]);
+      if (partial[section] && typeof partial[section] === 'object' && section in merged) {
+        Object.assign(merged[section], partial[section]);
+      } else if (section in merged) {
+        merged[section] = partial[section];
       }
     }
 

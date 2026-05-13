@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { showSettingsDialog, settings, sidebarCollapsed, serverVersion, updateAvailable, wsClient } from '../lib/stores.js';
-  import { saveSettings } from '../lib/settings-client.js';
+  import { saveSettings, loadSettings } from '../lib/settings-client.js';
   import { eventToShortcut, formatShortcut } from '../lib/shortcuts.js';
   import { DEFAULT_SETTINGS } from '../../shared/settings.js';
   import type { Settings } from '../../shared/settings.js';
@@ -12,7 +12,47 @@
   let localSettings: Settings = structuredClone($settings);
   // Ensure jira section exists (handles settings loaded before jira feature)
   if (!localSettings.jira) {
-    localSettings.jira = { baseUrl: '', email: '', apiToken: '' };
+    localSettings.jira = { baseUrl: '', email: '', apiToken: '', oauthClientId: '', oauthClientSecret: '', oauthAccessToken: '', oauthRefreshToken: '', oauthTokenExpiry: 0, cloudId: '' };
+  }
+  let oauthConnecting = false;
+  $: oauthConnected = !!(localSettings.jira.oauthAccessToken && localSettings.jira.oauthAccessToken !== '');
+  $: hasBasicAuth = !!(localSettings.jira.email && localSettings.jira.apiToken);
+
+  async function startOAuthFlow() {
+    oauthConnecting = true;
+    try {
+      // Save settings first so the server has the client ID/secret
+      await save();
+      const res = await fetch('/api/jira/auth');
+      const data = await res.json();
+      if (data.error) {
+        alert(data.error);
+        oauthConnecting = false;
+        return;
+      }
+      const popup = window.open(data.url, '_blank', 'width=600,height=700');
+      // Poll for popup close, then refresh settings to pick up tokens
+      const poll = setInterval(async () => {
+        if (!popup || popup.closed) {
+          clearInterval(poll);
+          oauthConnecting = false;
+          const updated = await loadSettings();
+          settings.set(updated);
+          localSettings = structuredClone(updated);
+        }
+      }, 500);
+    } catch {
+      oauthConnecting = false;
+    }
+  }
+
+  async function disconnectOAuth() {
+    await fetch('/api/jira/disconnect', { method: 'POST' });
+    localSettings.jira.oauthAccessToken = '';
+    localSettings.jira.oauthRefreshToken = '';
+    localSettings.jira.oauthTokenExpiry = 0;
+    localSettings.jira.cloudId = '';
+    markDirty();
   }
   let dirty = false;
   let checking = false;
@@ -259,16 +299,37 @@
           </button>
         </div>
       {:else if activeTab === 'jira'}
+        <h4 class="section-heading">OAuth (Atlassian Cloud)</h4>
+        <div class="field">
+          <label for="settings-jira-oauth-client">OAuth Client ID</label>
+          <input id="settings-jira-oauth-client" type="text" bind:value={localSettings.jira.oauthClientId} on:input={markDirty} placeholder="From developer.atlassian.com" />
+        </div>
+        <div class="field">
+          <label for="settings-jira-oauth-secret">OAuth Client Secret</label>
+          <input id="settings-jira-oauth-secret" type="password" bind:value={localSettings.jira.oauthClientSecret} on:input={markDirty} placeholder={localSettings.jira.oauthClientSecret === '••••' ? 'Configured' : 'From developer.atlassian.com'} />
+        </div>
+        <div class="field">
+          {#if oauthConnected}
+            <div class="oauth-status connected">Connected to {localSettings.jira.baseUrl || 'Atlassian'}</div>
+            <button class="oauth-btn disconnect" on:click={disconnectOAuth}>Disconnect</button>
+          {:else}
+            <button class="oauth-btn connect" on:click={startOAuthFlow} disabled={!localSettings.jira.oauthClientId || oauthConnecting}>
+              {oauthConnecting ? 'Connecting...' : 'Connect with Atlassian'}
+            </button>
+          {/if}
+        </div>
+
+        <h4 class="section-heading">API Token (alternative)</h4>
         <div class="field">
           <label for="settings-jira-url">JIRA Base URL</label>
           <input id="settings-jira-url" type="text" bind:value={localSettings.jira.baseUrl} on:input={markDirty} placeholder="https://mycompany.atlassian.net" />
         </div>
         <div class="field">
-          <label for="settings-jira-email">JIRA Email</label>
+          <label for="settings-jira-email">Email</label>
           <input id="settings-jira-email" type="text" bind:value={localSettings.jira.email} on:input={markDirty} placeholder="user@company.com" />
         </div>
         <div class="field">
-          <label for="settings-jira-token">JIRA API Token</label>
+          <label for="settings-jira-token">API Token</label>
           <input id="settings-jira-token" type="password" bind:value={localSettings.jira.apiToken} on:input={markDirty} placeholder={localSettings.jira.apiToken === '••••' ? 'Configured' : 'Paste API token'} />
         </div>
       {/if}
@@ -453,6 +514,62 @@
     margin-top: 20px;
     padding-top: 16px;
     border-top: 1px solid var(--border);
+  }
+
+  .section-heading {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 12px 0 4px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .section-heading:first-child {
+    margin-top: 0;
+  }
+
+  .oauth-btn {
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+  }
+
+  .oauth-btn.connect {
+    background: rgba(88, 166, 255, 0.15);
+    color: var(--blue);
+    border-color: rgba(88, 166, 255, 0.3);
+  }
+
+  .oauth-btn.connect:hover:not(:disabled) {
+    background: rgba(88, 166, 255, 0.25);
+  }
+
+  .oauth-btn.connect:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .oauth-btn.disconnect {
+    background: transparent;
+    color: var(--red);
+    border-color: var(--border);
+  }
+
+  .oauth-btn.disconnect:hover {
+    border-color: var(--red);
+  }
+
+  .oauth-status {
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+
+  .oauth-status.connected {
+    color: var(--green);
   }
 
   .reset-btn {

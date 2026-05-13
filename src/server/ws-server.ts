@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'http';
 import type { InstanceManager } from './instance-manager.js';
-import type { PtyManager } from './pty-manager.js';
+import type { IPtyManager } from './pty-manager.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 import { validateLaunchPayload, validateEditPayload } from './util/sanitize.js';
 import { createLogger } from './util/logger.js';
@@ -18,7 +18,7 @@ export interface WsServerHandle {
 export function createWsServer(
   server: Server,
   instanceManager: InstanceManager,
-  ptyManager: PtyManager,
+  ptyManager: IPtyManager,
 ): WsServerHandle {
   const wss = new WebSocketServer({
     server,
@@ -71,16 +71,57 @@ export function createWsServer(
 
   // Backpressure management: batch terminal data per-instance at ~60fps
   const BATCH_INTERVAL_MS = 16;
-  const MAX_BUFFER_BYTES = 2 * 1024 * 1024; // 2MB per-client cap
+  // Threshold above which we defer a flush to wait for the client's WS buffer
+  // to drain. Lower than the WS library's hard limit so we have headroom.
+  const WS_BACKPRESSURE_THRESHOLD = 4 * 1024 * 1024; // 4MB
+  // Hard cap on the server-side accumulator. If we exceed this (client truly
+  // stuck), we send anyway rather than holding indefinitely. Prefer corruption
+  // over OOM at this point.
+  const MAX_ACCUMULATED_BYTES = 32 * 1024 * 1024; // 32MB
   const outputBuffers = new Map<string, string>();
+  const batchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /** True if any subscriber is currently backpressured. */
+  function anySubscriberBackpressured(subs: Set<WebSocket>): boolean {
+    for (const client of subs) {
+      if (client.readyState === WebSocket.OPEN && client.bufferedAmount >= WS_BACKPRESSURE_THRESHOLD) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function scheduleFlush(instanceId: string): void {
+    if (batchTimers.has(instanceId)) return;
+    batchTimers.set(instanceId, setTimeout(() => {
+      batchTimers.delete(instanceId);
+      flushOutputBuffer(instanceId);
+    }, BATCH_INTERVAL_MS));
+  }
 
   function flushOutputBuffer(instanceId: string): void {
     const buffered = outputBuffers.get(instanceId);
     if (!buffered) return;
-    outputBuffers.delete(instanceId);
 
     const subs = instanceManager.subscribers.get(instanceId);
-    if (!subs) return;
+    if (!subs || subs.size === 0) {
+      // No subscribers — drop the buffer (no one to send to)
+      outputBuffers.delete(instanceId);
+      return;
+    }
+
+    // If a subscriber is backpressured, defer the flush rather than dropping
+    // bytes. ANSI sequences are stateful; dropping any portion produces
+    // corrupted output. Only force-send if we've accumulated too much.
+    if (
+      buffered.length < MAX_ACCUMULATED_BYTES &&
+      anySubscriberBackpressured(subs)
+    ) {
+      scheduleFlush(instanceId);
+      return;
+    }
+
+    outputBuffers.delete(instanceId);
 
     const msg = JSON.stringify({
       type: 'terminal:output',
@@ -88,25 +129,17 @@ export function createWsServer(
     } satisfies ServerMessage);
 
     for (const client of subs) {
-      if (client.readyState === WebSocket.OPEN && client.bufferedAmount < MAX_BUFFER_BYTES) {
+      if (client.readyState === WebSocket.OPEN) {
         client.send(msg);
       }
     }
   }
 
-  const batchTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
   // Forward PTY data to subscribed clients (batched)
   ptyManager.on('data', (instanceId: string, data: string) => {
     const existing = outputBuffers.get(instanceId) || '';
     outputBuffers.set(instanceId, existing + data);
-
-    if (!batchTimers.has(instanceId)) {
-      batchTimers.set(instanceId, setTimeout(() => {
-        batchTimers.delete(instanceId);
-        flushOutputBuffer(instanceId);
-      }, BATCH_INTERVAL_MS));
-    }
+    scheduleFlush(instanceId);
   });
 
   instanceManager.on('pty:exit', (instanceId: string, exitCode: number) => {

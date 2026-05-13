@@ -67,6 +67,9 @@ export interface InstanceInfo {
   ticket?: string;
   ticketUrl?: string;
   ticketStatus?: string;
+  ticketAssignee?: string;
+  ticketTitle?: string;
+  lastPrompt?: string;
   subtask?: string;
   progress?: number;
   currentTool?: string;

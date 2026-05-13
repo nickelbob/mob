@@ -33,22 +33,34 @@
     border-radius: 50%;
   }
 
-  .running { color: var(--green); background: rgba(63, 185, 80, 0.1); }
-  .running::before { background: var(--green); }
+  .running { color: #ffffff; background: rgba(63, 185, 80, 0.35); }
+  .running::before {
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid var(--green);
+    border-top-color: transparent;
+    border-radius: 50%;
+    background: transparent;
+    animation: spin 0.8s linear infinite;
+  }
 
-  .idle { color: var(--accent); background: rgba(88, 166, 255, 0.1); }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .idle { color: #ffffff; background: rgba(88, 166, 255, 0.35); }
   .idle::before { background: var(--accent); }
 
-  .waiting { color: var(--yellow); background: rgba(210, 153, 34, 0.15); }
+  .waiting { color: #ffffff; background: rgba(210, 153, 34, 0.45); }
   .waiting::before {
     background: var(--yellow);
     animation: pulse 1s ease-in-out infinite;
   }
 
-  .stopped { color: var(--text-muted); background: rgba(72, 79, 88, 0.1); }
+  .stopped { color: #e6edf3; background: rgba(139, 148, 158, 0.3); }
   .stopped::before { background: var(--text-muted); }
 
-  .launching { color: var(--yellow); background: rgba(210, 153, 34, 0.1); }
+  .launching { color: #ffffff; background: rgba(210, 153, 34, 0.35); }
   .launching::before {
     background: var(--yellow);
     animation: pulse 1s ease-in-out infinite;

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { PtyManager } from './pty-manager.js';
+import { PtyManager, findProjectDirForSession, decodeProjectDir, type IPtyManager } from './pty-manager.js';
 import { DiscoveryService } from './discovery.js';
 import { SessionStore } from './session-store.js';
 import { ScrollbackBuffer } from './scrollback-buffer.js';
@@ -9,8 +9,8 @@ import type { SettingsManager } from './settings-manager.js';
 import { generateInstanceId } from './util/id.js';
 import { STALE_THRESHOLD_MS, HOOK_SILENCE_THRESHOLD_MS } from '../shared/constants.js';
 import { getGitBranch, getGitRoot, getGitRemoteUrl, resolvePath } from './util/platform.js';
-import { fetchJiraStatus } from './jira-client.js';
-import { detectStateFromTerminal } from './terminal-state-detector.js';
+import { fetchJiraIssue, type JiraAuth } from './jira-client.js';
+import { detectStateFromTerminal, hasExplicitIdleMarker } from './terminal-state-detector.js';
 import fs from 'fs';
 import { execFileSync } from 'child_process';
 import { loadProjectConfig, type ProjectConfig } from './project-config.js';
@@ -77,17 +77,17 @@ export class InstanceManager extends EventEmitter {
   private autoNameIds = new Set<string>();
   private promptCount = new Map<string, number>();
   private teardownCommands = new Map<string, string[]>();
-  private ptyManager: PtyManager;
+  private ptyManager: IPtyManager;
   private discovery: DiscoveryService;
   private sessionStore: SessionStore;
   private scrollbackBuffer: ScrollbackBuffer;
   private settingsManager: SettingsManager;
   private staleTimer: ReturnType<typeof setInterval> | null = null;
-  private jiraStatusCache = new Map<string, { status: string; fetchedAt: number }>();
+  private jiraCache = new Map<string, { status: string | null; assignee: string | null; title: string | null; fetchedAt: number }>();
   public subscribers = new Map<string, Set<import('ws').WebSocket>>();
 
   constructor(
-    ptyManager: PtyManager,
+    ptyManager: IPtyManager,
     discovery: DiscoveryService,
     sessionStore: SessionStore,
     scrollbackBuffer: ScrollbackBuffer,
@@ -106,16 +106,37 @@ export class InstanceManager extends EventEmitter {
   private loadPreviousSessions(): void {
     const sessions = this.sessionStore.loadAll();
     const toResume: typeof sessions = [];
+    const adopted: typeof sessions = [];
     for (const info of sessions) {
       this.instances.set(info.id, info);
       this.managedIds.add(info.id);
-      if (info.autoResume) {
+      this.applyTicketFields(info);
+      if (this.ptyManager.has(info.id)) {
+        // PTY is still alive (supervisor kept it across our restart) — adopt
+        // it as-is rather than respawning. Start as 'idle': the next stale
+        // tick promotes to 'running' if a spinner is in the recent window;
+        // wrong-idle self-corrects within 10s, wrong-running does not.
+        info.state = 'idle';
+        info.lastUpdated = Date.now();
+        adopted.push(info);
+      } else if (info.autoResume) {
         toResume.push(info);
       }
     }
-    // Auto-resume instances that were running when the server shut down
+    for (const info of adopted) {
+      this.log.info(`[adopt] live PTY survived restart: ${info.id} (${info.name})`);
+      this.emit('update', info);
+    }
+    // Kill any PTYs in the supervisor that aren't in our session store
+    // (orphans from sessions that were dismissed while the worker was down).
+    for (const id of this.ptyManager.getAll().keys()) {
+      if (!this.instances.has(id)) {
+        this.log.info(`[orphan] killing orphan PTY ${id} not in session store`);
+        this.ptyManager.kill(id);
+      }
+    }
+    // Auto-resume instances that aren't alive
     if (toResume.length > 0) {
-      // Defer so the server finishes initializing first
       setTimeout(() => {
         for (const info of toResume) {
           this.log.info(`[auto-resume] Resuming instance ${info.id} (${info.name}) in ${info.cwd}`);
@@ -186,34 +207,77 @@ export class InstanceManager extends EventEmitter {
       info.ticketStatus = explicitTicketStatus;
     }
 
-    // Schedule async JIRA status fetch if we have a JIRA key and credentials, and no explicit status
-    if (!info.ticketStatus && info.ticket && JIRA_KEY_RE.test(info.ticket)) {
-      const jira = this.settingsManager.get().jira;
-      if (jira.baseUrl && jira.email && jira.apiToken) {
-        this.fetchAndSetJiraStatus(info.id, info.ticket);
+    // Schedule async JIRA fetch if we have a JIRA key and credentials, and missing info
+    if ((!info.ticketStatus || !info.ticketAssignee || !info.ticketTitle) && info.ticket && JIRA_KEY_RE.test(info.ticket)) {
+      if (this.buildJiraAuth()) {
+        this.fetchAndSetJiraInfo(info.id, info.ticket);
       }
     }
   }
 
-  private async fetchAndSetJiraStatus(instanceId: string, ticketKey: string): Promise<void> {
+  /** Build a JiraAuth object from current settings, or null if not configured. */
+  private buildJiraAuth(): JiraAuth | null {
+    const jira = this.settingsManager.get().jira;
+
+    // OAuth takes priority if configured
+    if (jira.oauthAccessToken && jira.oauthRefreshToken && jira.oauthClientId && jira.cloudId) {
+      return {
+        type: 'oauth',
+        cloudId: jira.cloudId,
+        accessToken: jira.oauthAccessToken,
+        refreshToken: jira.oauthRefreshToken,
+        clientId: jira.oauthClientId,
+        clientSecret: jira.oauthClientSecret,
+        tokenExpiry: jira.oauthTokenExpiry,
+        onTokenRefresh: (tokens) => {
+          this.settingsManager.update({
+            jira: {
+              oauthAccessToken: tokens.accessToken,
+              oauthRefreshToken: tokens.refreshToken,
+              oauthTokenExpiry: Date.now() + tokens.expiresIn * 1000,
+            },
+          });
+        },
+      };
+    }
+
+    // Fall back to Basic Auth
+    if (jira.baseUrl && jira.email && jira.apiToken) {
+      return {
+        type: 'basic',
+        baseUrl: jira.baseUrl,
+        email: jira.email,
+        apiToken: jira.apiToken,
+      };
+    }
+
+    return null;
+  }
+
+  private async fetchAndSetJiraInfo(instanceId: string, ticketKey: string): Promise<void> {
     // Check cache
-    const cached = this.jiraStatusCache.get(ticketKey);
+    const cached = this.jiraCache.get(ticketKey);
     if (cached && Date.now() - cached.fetchedAt < 60_000) {
       const info = this.instances.get(instanceId);
-      if (info && !info.ticketStatus) {
-        info.ticketStatus = cached.status;
+      if (info) {
+        if (!info.ticketStatus && cached.status) info.ticketStatus = cached.status;
+        if (!info.ticketAssignee && cached.assignee) info.ticketAssignee = cached.assignee;
+        if (!info.ticketTitle && cached.title) info.ticketTitle = cached.title;
         this.emit('update', info);
       }
       return;
     }
 
-    const { baseUrl, email, apiToken } = this.settingsManager.get().jira;
-    const status = await fetchJiraStatus(baseUrl, email, apiToken, ticketKey);
-    if (status) {
-      this.jiraStatusCache.set(ticketKey, { status, fetchedAt: Date.now() });
+    const auth = this.buildJiraAuth();
+    if (!auth) return;
+    const result = await fetchJiraIssue(auth, ticketKey);
+    if (result) {
+      this.jiraCache.set(ticketKey, { ...result, fetchedAt: Date.now() });
       const info = this.instances.get(instanceId);
       if (info) {
-        info.ticketStatus = status;
+        if (result.status) info.ticketStatus = result.status;
+        if (result.assignee) info.ticketAssignee = result.assignee;
+        if (result.title) info.ticketTitle = result.title;
         this.emit('update', info);
       }
     }
@@ -295,12 +359,12 @@ export class InstanceManager extends EventEmitter {
       permissionMode,
     };
 
-    this.applyTicketFields(info);
-
     this.instances.set(id, info);
     this.managedIds.add(id);
     if (autoName) this.autoNameIds.add(id);
     this.subscribers.set(id, new Set());
+
+    this.applyTicketFields(info);
 
     // Store teardown commands for later cleanup
     if (projectConfig?.teardown?.length) {
@@ -325,12 +389,17 @@ export class InstanceManager extends EventEmitter {
     return info;
   }
 
-  /** Transition launching → running after 3s if nothing else has changed the state. */
+  /**
+   * Transition launching → idle after 3s if nothing else has changed the state.
+   * Idle is the correct default: after spawn, Claude sits at its prompt waiting
+   * for user input. Real activity (UserPromptSubmit, PreToolUse) will flip it
+   * back to 'running' via the hook handler.
+   */
   private scheduleLaunchTransition(instanceId: string): void {
     setTimeout(() => {
       const info = this.instances.get(instanceId);
       if (info && info.state === 'launching') {
-        info.state = 'running';
+        info.state = 'idle';
         info.lastUpdated = Date.now();
         this.emit('update', info);
       }
@@ -381,11 +450,26 @@ export class InstanceManager extends EventEmitter {
     // Only use --resume with a real session ID from hooks; otherwise use --continue
     const resumeId = old.claudeSessionId || undefined;
 
+    // Claude stores session files keyed by the cwd where Claude was started.
+    // If Claude cd'd to a different dir during the session, the stored cwd may
+    // be wrong. Look up the actual project dir containing the session file.
+    let resumeCwd = old.cwd;
+    if (resumeId) {
+      const projectDir = findProjectDirForSession(resumeId);
+      if (projectDir) {
+        const decoded = decodeProjectDir(projectDir);
+        if (decoded !== old.cwd && fs.existsSync(decoded)) {
+          this.log.info(`resume: session ${resumeId} lives in ${decoded}, not ${old.cwd} — using ${decoded}`);
+          resumeCwd = decoded;
+        }
+      }
+    }
+
     const info: InstanceInfo = {
       id: newId,
       name: old.name,
       managed: true,
-      cwd: old.cwd,
+      cwd: resumeCwd,
       state: 'launching',
       lastUpdated: now,
       createdAt: now,
@@ -393,9 +477,9 @@ export class InstanceManager extends EventEmitter {
       model: old.model,
       permissionMode: old.permissionMode,
       previousInstanceId: instanceId,
-      gitRoot: getGitRoot(old.cwd) || old.gitRoot,
-      gitRemoteUrl: getGitRemoteUrl(old.cwd) || old.gitRemoteUrl,
-      gitBranch: getGitBranch(old.cwd) || old.gitBranch,
+      gitRoot: getGitRoot(resumeCwd) || old.gitRoot,
+      gitRemoteUrl: getGitRemoteUrl(resumeCwd) || old.gitRemoteUrl,
+      gitBranch: getGitBranch(resumeCwd) || old.gitBranch,
     };
 
     this.instances.set(newId, info);
@@ -409,8 +493,10 @@ export class InstanceManager extends EventEmitter {
     }
     this.subscribers.set(newId, new Set());
 
+    this.applyTicketFields(info);
+
     try {
-      this.ptyManager.spawn(newId, old.cwd, {
+      this.ptyManager.spawn(newId, resumeCwd, {
         model: old.model,
         permissionMode: old.permissionMode,
         claudeSessionId: resumeId,
@@ -522,14 +608,25 @@ export class InstanceManager extends EventEmitter {
     // Capture claude session ID from hook data
     const claudeSessionId = data.sessionId || existing?.claudeSessionId;
 
+    // For managed instances, preserve the original spawn cwd so resume works
+    // even if Claude cd'd elsewhere. Claude's session files are keyed by the
+    // original cwd, so spawning in the new cwd would break --resume.
+    const isManaged = this.managedIds.has(data.id);
+    const cwd = isManaged ? (existing?.cwd || data.cwd) : data.cwd;
+
+    // Topic comes from UserPromptSubmit hook — it's the user's latest prompt
+    // (truncated to 80 chars by the hook script). Preserve the previous value
+    // when the current hook event isn't a prompt submit.
+    const lastPrompt = data.topic || existing?.lastPrompt;
+
     const info: InstanceInfo = {
       id: data.id,
       name,
-      managed: this.managedIds.has(data.id),
-      cwd: data.cwd,
+      managed: isManaged,
+      cwd,
       project: existing?.project,
-      gitRoot: existing?.gitRoot || getGitRoot(data.cwd),
-      gitRemoteUrl: existing?.gitRemoteUrl || getGitRemoteUrl(data.cwd),
+      gitRoot: existing?.gitRoot || getGitRoot(cwd),
+      gitRemoteUrl: existing?.gitRemoteUrl || getGitRemoteUrl(cwd),
       gitBranch: data.gitBranch,
       state: data.state,
       ticket: data.ticket,
@@ -540,6 +637,7 @@ export class InstanceManager extends EventEmitter {
       model: data.model || existing?.model,
       createdAt: existing?.createdAt,
       claudeSessionId,
+      lastPrompt,
     };
     info.lastHookUpdate = Date.now();
     info.lastHookEvent = data.hookEvent || existing?.lastHookEvent;
@@ -612,7 +710,7 @@ export class InstanceManager extends EventEmitter {
         if (this.managedIds.has(id)) {
           const hookSilent = !info.lastHookUpdate || (now - info.lastHookUpdate > HOOK_SILENCE_THRESHOLD_MS);
 
-          // Check if PTY is dead but state isn't stopped
+          // PTY dead but state still 'running'/'idle' → mark stopped
           if (!this.ptyManager.has(id)) {
             this.log.info(`stale check: PTY dead for ${id} (${info.name}), marking stopped`);
             info.state = 'stopped';
@@ -623,11 +721,36 @@ export class InstanceManager extends EventEmitter {
             continue;
           }
 
-          // If hooks have been silent, try terminal-based detection
-          if (hookSilent) {
-            const tail = this.scrollbackBuffer.getTail(id, 500);
+          // Always-on demotion: flip running → idle every cycle when both
+          // conditions are true:
+          //   (a) the detector returns 'idle' (no "esc to interrupt" anywhere
+          //       in the recent window — Claude isn't actively processing)
+          //   (b) an explicit idle marker (mode footer) is present in the
+          //       prompt zone — positive evidence Claude is at its prompt
+          // Both conditions are required because during running, the mode
+          // footer is still rendered (with " · esc to interrupt" appended) —
+          // we'd false-demote if we used (b) alone. This fixes "fresh Claude
+          // shows Running forever" without waiting for the hook-silence
+          // threshold.
+          if (info.state === 'running') {
+            const tail = this.scrollbackBuffer.getTail(id, 2500);
             const detected = detectStateFromTerminal(tail);
-            if (detected && detected !== info.state) {
+            if (detected === 'idle' && hasExplicitIdleMarker(tail)) {
+              this.log.info(`demote (no esc-to-interrupt + mode footer): ${id} (${info.name}) running → idle`);
+              info.state = 'idle';
+              info.lastUpdated = now;
+              this.emit('update', info);
+              continue;
+            }
+          }
+
+          // Bidirectional fallback when hooks have been silent for a while.
+          // Trusted to both promote idle→running and demote running→idle since
+          // the detector now distinguishes both with positive evidence.
+          if (hookSilent) {
+            const tail = this.scrollbackBuffer.getTail(id, 2500);
+            const detected = detectStateFromTerminal(tail);
+            if (detected !== info.state) {
               this.log.info(`terminal fallback: ${id} (${info.name}) ${info.state} → ${detected}`);
               info.state = detected;
               info.lastUpdated = now;
@@ -639,14 +762,26 @@ export class InstanceManager extends EventEmitter {
     }, 10_000);
   }
 
-  /** Recompute ticket URLs for all instances (call after JIRA settings change). */
+  /** Recompute ticket URLs and re-fetch JIRA info for all instances (call after JIRA settings change). */
   refreshTicketFields(): void {
+    // Clear JIRA cache so the next fetches get fresh data with new credentials
+    this.jiraCache.clear();
+
     for (const info of this.instances.values()) {
-      const oldUrl = info.ticketUrl;
-      info.ticketUrl = this.computeTicketUrl(info.ticket);
-      if (info.ticketUrl !== oldUrl) {
-        this.emit('update', info);
+      // Re-derive ticket from branch if not set
+      if (!info.ticket) {
+        const derived = extractJiraKey(info.gitBranch);
+        if (derived) info.ticket = derived;
       }
+      info.ticketUrl = this.computeTicketUrl(info.ticket);
+
+      // Trigger a fresh fetch — keep existing status/assignee/title visible
+      // until the new values arrive (avoids flash of missing badges)
+      if (info.ticket && JIRA_KEY_RE.test(info.ticket) && this.buildJiraAuth()) {
+        this.fetchAndSetJiraInfo(info.id, info.ticket);
+      }
+
+      this.emit('update', info);
     }
   }
 

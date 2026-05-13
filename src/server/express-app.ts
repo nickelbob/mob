@@ -4,9 +4,11 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 import type { InstanceManager } from './instance-manager.js';
 import type { SettingsManager } from './settings-manager.js';
 import { shellQuote, validateHookPayload } from './util/sanitize.js';
+import { buildOAuthAuthorizeUrl, exchangeOAuthCode, fetchCloudId } from './jira-client.js';
 import { createLogger } from './util/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -18,7 +20,7 @@ export function createApp(instanceManager: InstanceManager, settingsManager: Set
 
   // Request logging for API routes
   app.use('/api', (req, _res, next) => {
-    log.info(`${req.method} ${req.originalUrl}`);
+    log.info(`→ ${req.method} ${req.originalUrl}`);
     next();
   });
 
@@ -129,6 +131,38 @@ export function createApp(instanceManager: InstanceManager, settingsManager: Set
     res.json({ platform: process.platform });
   });
 
+  // Open a directory in the native file explorer
+  app.post('/api/open-dir', (req, res) => {
+    const dir = req.body?.path as string;
+    if (!dir || typeof dir !== 'string') {
+      res.status(400).json({ error: 'path required' });
+      return;
+    }
+    if (dir.includes('\0') || dir.includes('\n') || dir.includes('\r')) {
+      res.status(400).json({ error: 'Invalid path' });
+      return;
+    }
+    // Verify the directory belongs to a known instance to prevent arbitrary path opening
+    const allowed = instanceManager.getAll().some(i => i.cwd === dir);
+    if (!allowed) {
+      res.status(403).json({ error: 'Path not associated with any instance' });
+      return;
+    }
+
+    const cmd = process.platform === 'win32' ? 'explorer.exe'
+      : process.platform === 'darwin' ? 'open'
+      : 'xdg-open';
+    execFile(cmd, [dir], { timeout: 5000 } as any, (err: any) => {
+      // explorer.exe returns non-zero exit codes even on success — ignore
+      if (err && process.platform !== 'win32') {
+        log.error('open-dir failed:', err.message);
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      res.json({ ok: true });
+    });
+  });
+
   // Settings API
   app.get('/api/settings', (_req, res) => {
     res.json(settingsManager.getRedacted());
@@ -142,6 +176,85 @@ export function createApp(instanceManager: InstanceManager, settingsManager: Set
     } catch (err: any) {
       res.status(400).json({ error: err.message || 'Invalid settings' });
     }
+  });
+
+  // JIRA OAuth flow
+  let oauthState: string | null = null;
+
+  app.get('/api/jira/auth', (req, res) => {
+    const settings = settingsManager.get();
+    const clientId = settings.jira.oauthClientId;
+    if (!clientId) {
+      res.status(400).json({ error: 'OAuth Client ID not configured. Set it in Settings > JIRA.' });
+      return;
+    }
+    oauthState = crypto.randomBytes(16).toString('hex');
+    const port = req.socket.localPort || 4040;
+    const redirectUri = `http://localhost:${port}/api/jira/callback`;
+    const url = buildOAuthAuthorizeUrl(clientId, redirectUri, oauthState);
+    res.json({ url });
+  });
+
+  app.get('/api/jira/callback', async (req, res) => {
+    const { code, state, error } = req.query;
+    if (error) {
+      res.status(400).send(`<h2>JIRA Authorization Failed</h2><p>${error}</p><script>window.close()</script>`);
+      return;
+    }
+    if (!code || state !== oauthState) {
+      res.status(400).send('<h2>Invalid callback</h2><p>State mismatch or missing code.</p>');
+      return;
+    }
+    oauthState = null;
+
+    const settings = settingsManager.get();
+    const port = req.socket.localPort || 4040;
+    const redirectUri = `http://localhost:${port}/api/jira/callback`;
+
+    const tokens = await exchangeOAuthCode(
+      settings.jira.oauthClientId,
+      settings.jira.oauthClientSecret,
+      code as string,
+      redirectUri,
+    );
+    if (!tokens) {
+      res.status(500).send('<h2>Token exchange failed</h2><p>Check server logs.</p>');
+      return;
+    }
+
+    // Fetch cloud ID and site URL
+    const site = await fetchCloudId(tokens.accessToken);
+    if (!site) {
+      res.status(500).send('<h2>Failed to fetch Atlassian site info</h2><p>Check server logs.</p>');
+      return;
+    }
+
+    // Save tokens and site info
+    settingsManager.update({
+      jira: {
+        oauthAccessToken: tokens.accessToken,
+        oauthRefreshToken: tokens.refreshToken,
+        oauthTokenExpiry: Date.now() + tokens.expiresIn * 1000,
+        cloudId: site.cloudId,
+        baseUrl: site.baseUrl,
+      },
+    });
+    instanceManager.refreshTicketFields();
+
+    log.info(`JIRA OAuth connected: site=${site.baseUrl} cloudId=${site.cloudId}`);
+    res.send('<h2>Connected to JIRA!</h2><p>You can close this window.</p><script>window.close()</script>');
+  });
+
+  app.post('/api/jira/disconnect', (_req, res) => {
+    settingsManager.update({
+      jira: {
+        oauthAccessToken: '',
+        oauthRefreshToken: '',
+        oauthTokenExpiry: 0,
+        cloudId: '',
+      },
+    });
+    res.json({ ok: true });
   });
 
   // Hook endpoint — receives status updates from hook scripts

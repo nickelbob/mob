@@ -8,6 +8,7 @@
 
   $: selected = $selectedInstanceId === instance.id;
   $: needsInput = instance.state === 'waiting';
+  $: displayName = instance.ticketTitle || instance.name;
 
   // Edit state
   let editing = false;
@@ -96,6 +97,15 @@
     wsClient.send({ type: 'dismiss', payload: { instanceId: instance.id } });
   }
 
+  function openDir(e: Event) {
+    e.stopPropagation();
+    fetch('/api/open-dir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: instance.cwd }),
+    }).catch(() => { /* best-effort */ });
+  }
+
   function shortPath(p: string): string {
     const home = '~';
     // Simple home dir replacement (Linux + macOS)
@@ -112,7 +122,7 @@
              on:keydown={handleRenameKeydown} on:blur={saveRename}
              on:click|stopPropagation on:mousedown|stopPropagation />
     {:else}
-      <span class="name" on:dblclick={startRename} title="Double-click to rename">{instance.name}</span>
+      <span class="name" on:dblclick={startRename} title={instance.ticketTitle ? `${instance.name} — double-click to rename` : 'Double-click to rename'}>{displayName}</span>
     {/if}
     <div class="header-right">
       {#if instance.managed && !editing}
@@ -121,6 +131,16 @@
         </button>
       {/if}
       <StatusBadge state={instance.state} />
+      {#if !editing}
+        {#if instance.managed && instance.state === 'stopped'}
+          <button class="resume-btn" on:click={resume} title="Resume session">Resume</button>
+          <button class="dismiss-btn" on:click={dismiss} title="Dismiss">✕</button>
+        {:else if instance.managed && instance.state !== 'stopped'}
+          <button class="kill-btn" on:click={kill} title="Kill instance">✕</button>
+        {:else if !instance.managed}
+          <button class="dismiss-btn" on:click={dismiss} title="Dismiss">✕</button>
+        {/if}
+      {/if}
     </div>
   </div>
 
@@ -173,7 +193,12 @@
           {instance.gitBranch}
         </span>
       {/if}
-      <span class="meta-item cwd" title={instance.cwd}>{shortPath(instance.cwd)}</span>
+      <span class="meta-item cwd" title={instance.cwd}>
+        <button class="open-dir-btn" title="Open in file explorer" on:click|stopPropagation={openDir} aria-label="Open in file explorer">
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3h-6.5a.25.25 0 0 1-.2-.1l-.9-1.2A1.75 1.75 0 0 0 5.25 1h-3.5Z"/></svg>
+        </button>
+        <span class="cwd-path">{shortPath(instance.cwd)}</span>
+      </span>
     </div>
 
     {#if instance.ticket || instance.subtask}
@@ -188,30 +213,15 @@
           {#if instance.ticketStatus}
             <span class="ticket-status">{instance.ticketStatus}</span>
           {/if}
+          {#if instance.ticketAssignee}
+            <span class="ticket-assignee">{instance.ticketAssignee}</span>
+          {/if}
         {/if}
         {#if instance.subtask}<span class="subtask">{instance.subtask}</span>{/if}
       </div>
     {/if}
 
-    {#if instance.currentTool}
-      <div class="current-tool">Using: {instance.currentTool}</div>
-    {/if}
-
     <ProgressBar progress={instance.progress} />
-
-    <div class="card-footer">
-      <span class="badge-type" title={instance.managed ? 'Launched and controlled by mob' : 'Discovered externally via hooks'}>{instance.managed ? 'managed' : 'external'}</span>
-      <div class="card-actions">
-        {#if instance.managed && instance.state === 'stopped'}
-          <button class="resume-btn" on:click={resume} title="Resume session">Resume</button>
-          <button class="dismiss-btn" on:click={dismiss} title="Dismiss">✕</button>
-        {:else if instance.managed && instance.state !== 'stopped'}
-          <button class="kill-btn" on:click={kill} title="Kill instance">✕</button>
-        {:else if !instance.managed}
-          <button class="dismiss-btn" on:click={dismiss} title="Dismiss">✕</button>
-        {/if}
-      </div>
-    </div>
   {/if}
 </div>
 
@@ -400,6 +410,39 @@
     white-space: nowrap;
   }
 
+  .cwd-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .open-dir-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s, background 0.15s;
+  }
+
+  .card:hover .open-dir-btn {
+    opacity: 1;
+  }
+
+  .open-dir-btn:hover {
+    color: var(--accent);
+    background: rgba(88, 166, 255, 0.1);
+  }
+
   .card-task {
     display: flex;
     gap: 6px;
@@ -432,29 +475,17 @@
     border-radius: 4px;
   }
 
+  .ticket-assignee {
+    font-size: 10px;
+    color: var(--blue);
+    background: rgba(88, 166, 255, 0.1);
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+
   .subtask {
     font-size: 11px;
     color: var(--text-secondary);
-  }
-
-  .current-tool {
-    font-size: 11px;
-    color: var(--yellow);
-    margin-bottom: 2px;
-  }
-
-  .card-footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-top: 6px;
-  }
-
-  .badge-type {
-    font-size: 10px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
   }
 
   .kill-btn {
@@ -472,12 +503,6 @@
   .kill-btn:hover {
     background: rgba(248, 81, 73, 0.2);
     color: var(--red);
-  }
-
-  .card-actions {
-    display: flex;
-    align-items: center;
-    gap: 4px;
   }
 
   .resume-btn {

@@ -79,7 +79,72 @@ function findLatestSession(cwd: string): string | null {
   }
 }
 
-export class PtyManager extends EventEmitter {
+/**
+ * Find the project directory (decoded cwd) containing a given session ID.
+ * Useful when Claude cd'd somewhere else and the session lives in a different
+ * project folder than the one we'd expect from the spawn cwd.
+ */
+export function findProjectDirForSession(sessionId: string): string | null {
+  const projectsRoot = path.join(os.homedir(), '.claude', 'projects');
+  try {
+    const projectDirs = fs.readdirSync(projectsRoot, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => d.name);
+
+    for (const dir of projectDirs) {
+      const sessionFile = path.join(projectsRoot, dir, `${sessionId}.jsonl`);
+      if (fs.existsSync(sessionFile)) {
+        return dir;
+      }
+    }
+  } catch {
+    /* ok */
+  }
+  return null;
+}
+
+/**
+ * Decode a Claude project directory name back to a filesystem path.
+ * E.g. "E--Development-mob" → "E:\Development\mob" (Windows)
+ */
+export function decodeProjectDir(encoded: string): string {
+  if (process.platform === 'win32') {
+    // First two chars are drive letter + dash → "E:"
+    const m = encoded.match(/^([A-Za-z])--(.*)$/);
+    if (m) {
+      return m[1] + ':\\' + m[2].replace(/-/g, '\\');
+    }
+  }
+  // Unix: leading dash → root, dashes → /
+  return '/' + encoded.replace(/-/g, '/').replace(/^\/+/, '/');
+}
+
+/**
+ * Common interface shared by `PtyManager` (in-process) and `RemotePtyManager`
+ * (IPC client to a separate supervisor). InstanceManager and ws-server are
+ * typed against this so they can use either implementation interchangeably.
+ *
+ * Mirrors the EventEmitter contract for 'data' and 'exit' events.
+ */
+export interface IPtyManager {
+  spawn(instanceId: string, cwd: string, opts?: {
+    model?: string;
+    permissionMode?: string;
+    claudeSessionId?: string;
+    resume?: boolean;
+    setupCommands?: string[];
+  }): unknown;
+  write(instanceId: string, data: string): void;
+  resize(instanceId: string, cols: number, rows: number): void;
+  kill(instanceId: string): void;
+  has(instanceId: string): boolean;
+  getAll(): Map<string, unknown>;
+  on(event: 'data', listener: (instanceId: string, data: string) => void): this;
+  on(event: 'exit', listener: (instanceId: string, exitCode: number) => void): this;
+  on(event: 'error', listener: (instanceId: string, error: unknown) => void): this;
+}
+
+export class PtyManager extends EventEmitter implements IPtyManager {
   private ptys = new Map<string, IPty>();
 
   spawn(instanceId: string, cwd: string, opts?: {

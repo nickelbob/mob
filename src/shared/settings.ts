@@ -42,6 +42,12 @@ export interface Settings {
     baseUrl: string;
     email: string;
     apiToken: string;
+    oauthClientId: string;
+    oauthClientSecret: string;
+    oauthAccessToken: string;
+    oauthRefreshToken: string;
+    oauthTokenExpiry: number;
+    cloudId: string;
   };
 }
 
@@ -89,6 +95,12 @@ export const DEFAULT_SETTINGS: Settings = {
     baseUrl: '',
     email: '',
     apiToken: '',
+    oauthClientId: '',
+    oauthClientSecret: '',
+    oauthAccessToken: '',
+    oauthRefreshToken: '',
+    oauthTokenExpiry: 0,
+    cloudId: '',
   },
 };
 
