@@ -61,14 +61,19 @@ try { $GitBranch = git -C "$Cwd" branch --show-current 2>$null } catch {}
 
 # State from event
 $State = switch ($HookEvent) {
-    "SessionStart" { "idle" }
-    "SessionEnd"   { "stopped" }
-    "Stop"         { "idle" }
-    "PreToolUse"   { "running" }
-    "PostToolUse"  { "running" }
-    "Notification" { "idle" }
-    "UserPromptSubmit" { "running" }
-    default        { "idle" }
+    "SessionStart"       { "idle" }
+    "SessionEnd"         { "stopped" }
+    "Stop"               { "idle" }
+    "PreToolUse"         { "running" }
+    "PostToolUse"        { "running" }
+    "PostToolUseFailure" { "running" }
+    "Notification"       { "idle" }
+    "UserPromptSubmit"   { "running" }
+    "PermissionRequest"  { "waiting" }
+    "PermissionDenied"   { "running" }
+    "Elicitation"        { "waiting" }
+    "ElicitationResult"  { "running" }
+    default              { "idle" }
 }
 Log "State=$State"
 

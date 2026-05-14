@@ -11,9 +11,14 @@ const HOOK_SCRIPT_WIN = path.resolve(__dirname, '..', 'hooks', 'mob-status.ps1')
 const HOOK_EVENTS = [
   'PreToolUse',
   'PostToolUse',
+  'PostToolUseFailure',
   'Stop',
   'UserPromptSubmit',
   'Notification',
+  'PermissionRequest',
+  'PermissionDenied',
+  'Elicitation',
+  'ElicitationResult',
 ];
 
 function getHookCommand(): string {

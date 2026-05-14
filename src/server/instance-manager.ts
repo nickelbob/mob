@@ -745,9 +745,14 @@ export class InstanceManager extends EventEmitter {
           }
 
           // Bidirectional fallback when hooks have been silent for a while.
-          // Trusted to both promote idle→running and demote running→idle since
-          // the detector now distinguishes both with positive evidence.
-          if (hookSilent) {
+          // Used to promote idle→running and demote running→idle. Notably we
+          // do NOT auto-leave the 'waiting' state from terminal detection
+          // alone: 'waiting' is set authoritatively by the PreToolUse hook
+          // when Claude is in AskUserQuestion, and the AskUserQuestion TUI
+          // doesn't render any pattern the detector can distinguish from
+          // idle. A contradicting hook event (PostToolUse / Stop) is what
+          // ends a wait.
+          if (hookSilent && info.state !== 'waiting') {
             const tail = this.scrollbackBuffer.getTail(id, 2500);
             const detected = detectStateFromTerminal(tail);
             if (detected !== info.state) {

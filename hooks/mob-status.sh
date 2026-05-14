@@ -46,14 +46,19 @@ HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // .event // empty' 2>/dev/
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || echo "")
 
 case "$HOOK_EVENT" in
-  "SessionStart") STATE="idle" ;;
-  "SessionEnd")   STATE="stopped" ;;
-  "Stop")         STATE="idle" ;;
-  "PreToolUse")   STATE="running" ;;
-  "PostToolUse")  STATE="running" ;;
-  "Notification") STATE="idle" ;;
-  "UserPromptSubmit") STATE="running" ;;
-  *)              STATE="idle" ;;
+  "SessionStart")        STATE="idle" ;;
+  "SessionEnd")          STATE="stopped" ;;
+  "Stop")                STATE="idle" ;;
+  "PreToolUse")          STATE="running" ;;
+  "PostToolUse")         STATE="running" ;;
+  "PostToolUseFailure")  STATE="running" ;;
+  "Notification")        STATE="idle" ;;
+  "UserPromptSubmit")    STATE="running" ;;
+  "PermissionRequest")   STATE="waiting" ;;
+  "PermissionDenied")    STATE="running" ;;
+  "Elicitation")         STATE="waiting" ;;
+  "ElicitationResult")   STATE="running" ;;
+  *)                     STATE="idle" ;;
 esac
 
 # Extract user prompt from UserPromptSubmit for auto-naming

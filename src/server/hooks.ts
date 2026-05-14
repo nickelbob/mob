@@ -7,9 +7,14 @@ const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json')
 const HOOK_EVENTS = [
   'PreToolUse',
   'PostToolUse',
+  'PostToolUseFailure',
   'Stop',
   'UserPromptSubmit',
   'Notification',
+  'PermissionRequest',
+  'PermissionDenied',
+  'Elicitation',
+  'ElicitationResult',
 ];
 
 function getHookCommand(packageRoot: string): string {
