@@ -49,7 +49,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@lydell/node-pty": "^1.0.0",
+    "@lydell/node-pty": "1.2.0-beta.14",
     "chokidar": "^4.0.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
