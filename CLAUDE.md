@@ -12,7 +12,7 @@ Mob is a local web dashboard that coordinates multiple Claude Code CLI sessions:
 
 **Terminal I/O:** xterm `onData` → WS `terminal:input` → PtyManager writes to PTY stdin → PTY emits data → WS `terminal:output` → only subscribed clients receive it.
 
-**External instance discovery:** Hook script writes JSON to `~/.mob/instances/{id}.json` and/or POSTs to `/api/hook` → DiscoveryService or Express route → InstanceManager merges into instance map → broadcasts update.
+**External instance discovery:** Hook script writes JSON to `~/.mob/instances/{id}.json` and POSTs to `/api/hook` → DiscoveryService or Express route → InstanceManager merges into instance map → broadcasts update. The POST is the live channel; file-watch events are deduped against a fresh POST (2s window) and serve as the startup seed / server-down fallback.
 
 ## Key Design Details
 
@@ -22,4 +22,5 @@ Mob is a local web dashboard that coordinates multiple Claude Code CLI sessions:
 - PTY spawns a shell first (not `claude` directly) so the user's PATH/auth loads and they can Ctrl+C back to a shell.
 - `~` paths from the frontend are expanded server-side via `os.homedir()` in pty-manager.
 - Instances with `autoName: true` get renamed when the first `subtask` arrives via hook update.
-- Stale detection: instances with no update for 30s get marked `stale` (checked every 10s).
+- All instance-state transitions flow through the pure reducer in `src/server/instance-state.ts` (precedence: PTY exit > fresh hooks > terminal detection, with 2-tick hysteresis on terminal-driven demotions). Never mutate `info.state` directly — submit an event via `applyStateEvent`.
+- A 10s stale-check timer feeds terminal-detection events to the reducer and marks instances stopped when their PTY is dead.

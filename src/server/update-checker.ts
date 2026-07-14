@@ -31,13 +31,18 @@ export function getVersion(): string {
 }
 
 function isNewer(latest: string, current: string): boolean {
-  const a = latest.split('.').map(Number);
-  const b = current.split('.').map(Number);
+  // Split off any prerelease suffix — "0.5.7-beta".split('.') would give a
+  // NaN patch component, which compares as "equal" and corrupts ordering.
+  const [aCore, aPre] = latest.split('-', 2);
+  const [bCore, bPre] = current.split('-', 2);
+  const a = aCore.split('.').map(Number);
+  const b = bCore.split('.').map(Number);
   for (let i = 0; i < 3; i++) {
     if ((a[i] ?? 0) > (b[i] ?? 0)) return true;
     if ((a[i] ?? 0) < (b[i] ?? 0)) return false;
   }
-  return false;
+  // Same core version: a release is newer than its prereleases (semver §11).
+  return !!bPre && !aPre;
 }
 
 let cached: { current: string; latest: string } | null | undefined;

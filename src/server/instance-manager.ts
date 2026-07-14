@@ -7,10 +7,11 @@ import type { InstanceInfo, InstanceState, LaunchConflicts, LaunchPayload } from
 import type { InstanceStatusFile } from './types.js';
 import type { SettingsManager } from './settings-manager.js';
 import { generateInstanceId } from './util/id.js';
-import { STALE_THRESHOLD_MS, HOOK_SILENCE_THRESHOLD_MS } from '../shared/constants.js';
-import { getGitBranch, getGitRoot, getGitRemoteUrl, resolvePath } from './util/platform.js';
+import { getGitBranch, getGitBranchAsync, getGitRoot, getGitRemoteUrl, getInstancesDir, resolvePath } from './util/platform.js';
+import path from 'path';
 import { fetchJiraIssue, type JiraAuth } from './jira-client.js';
 import { detectStateFromTerminal, hasExplicitIdleMarker } from './terminal-state-detector.js';
+import { reduce, type StateEvent } from './instance-state.js';
 import fs from 'fs';
 import { execFileSync } from 'child_process';
 import { loadProjectConfig, type ProjectConfig } from './project-config.js';
@@ -19,6 +20,12 @@ import { createLogger } from './util/logger.js';
 const logger = createLogger('instance-mgr');
 
 const JIRA_KEY_RE = /([A-Z][A-Z0-9]+-\d+)/;
+
+/**
+ * A file-watch hook event arriving within this window of a POSTed one is the
+ * same event delivered twice (the hook script does both); drop it.
+ */
+const FILE_UPDATE_DEDUP_MS = 2_000;
 
 /** Trivial prompts that should not become instance titles. */
 const TRIVIAL_PROMPTS = new Set([
@@ -84,7 +91,35 @@ export class InstanceManager extends EventEmitter {
   private settingsManager: SettingsManager;
   private staleTimer: ReturnType<typeof setInterval> | null = null;
   private jiraCache = new Map<string, { status: string | null; assignee: string | null; title: string | null; fetchedAt: number }>();
+  /** Per-instance hysteresis counters for the state reducer. */
+  private pendingIdleTicks = new Map<string, number>();
+  /** When the last POSTed hook update landed, per instance — used to dedup file-watch echoes. */
+  private lastPostHookAt = new Map<string, number>();
   public subscribers = new Map<string, Set<import('ws').WebSocket>>();
+
+  /**
+   * Route a state event through the reducer (see instance-state.ts).
+   * Mutates `info` and returns true when the state actually changed —
+   * callers decide whether to emit/persist.
+   */
+  private applyStateEvent(info: InstanceInfo, ev: StateEvent): boolean {
+    const next = reduce(
+      {
+        state: info.state,
+        lastHookUpdate: info.lastHookUpdate,
+        pendingIdleTicks: this.pendingIdleTicks.get(info.id) ?? 0,
+      },
+      ev,
+    );
+    if (next.pendingIdleTicks > 0) this.pendingIdleTicks.set(info.id, next.pendingIdleTicks);
+    else this.pendingIdleTicks.delete(info.id);
+    if (next.lastHookUpdate !== undefined) info.lastHookUpdate = next.lastHookUpdate;
+    if (next.state === info.state) return false;
+    info.state = next.state;
+    info.lastUpdated = ev.at;
+    if (next.state === 'stopped') info.stoppedAt = ev.at;
+    return true;
+  }
 
   constructor(
     ptyManager: IPtyManager,
@@ -113,11 +148,21 @@ export class InstanceManager extends EventEmitter {
       this.applyTicketFields(info);
       if (this.ptyManager.has(info.id)) {
         // PTY is still alive (supervisor kept it across our restart) — adopt
-        // it as-is rather than respawning. Start as 'idle': the next stale
-        // tick promotes to 'running' if a spinner is in the recent window;
-        // wrong-idle self-corrects within 10s, wrong-running does not.
-        info.state = 'idle';
-        info.lastUpdated = Date.now();
+        // it as-is rather than respawning. Idle is the safe default; the
+        // persisted scrollback corrects it right away if Claude is mid-task,
+        // instead of waiting up to 10s for the first stale tick.
+        const now = Date.now();
+        this.applyStateEvent(info, { source: 'lifecycle', kind: 'adopt', at: now });
+        const tail = this.scrollbackBuffer.getBuffer(info.id).slice(-2500);
+        if (tail) {
+          this.applyStateEvent(info, {
+            source: 'terminal',
+            detected: detectStateFromTerminal(tail),
+            hasIdleMarker: hasExplicitIdleMarker(tail),
+            at: now,
+          });
+        }
+        info.lastUpdated = now;
         adopted.push(info);
       } else if (info.autoResume) {
         toResume.push(info);
@@ -149,7 +194,12 @@ export class InstanceManager extends EventEmitter {
   private setupListeners(): void {
     this.discovery.on('update', (status: InstanceStatusFile) => {
       this.log.info(`discovery update: id=${status.id} state=${status.state} topic=${status.topic || '(none)'}`);
-      this.handleHookUpdate(status);
+      try {
+        this.handleHookUpdate(status, 'file');
+      } catch (err) {
+        // A throw here would surface as uncaughtException and kill the server.
+        this.log.error(`discovery update failed for ${status.id}: ${err instanceof Error ? err.message : err}`);
+      }
     });
 
     this.discovery.on('remove', (id: string) => {
@@ -171,9 +221,7 @@ export class InstanceManager extends EventEmitter {
       const info = this.instances.get(instanceId);
       this.log.info(`PTY exit event: id=${instanceId} exitCode=${exitCode} name="${info?.name}" state=${info?.state}`);
       if (info) {
-        info.state = 'stopped';
-        info.stoppedAt = Date.now();
-        info.lastUpdated = Date.now();
+        this.applyStateEvent(info, { source: 'pty', kind: 'exited', at: Date.now() });
         this.emit('update', info);
         this.scrollbackBuffer.flushAll();
         this.sessionStore.save(info);
@@ -291,6 +339,7 @@ export class InstanceManager extends EventEmitter {
     } catch { /* doesn't exist */ }
 
     const branch = getGitBranch(cwd);
+    const remoteUrl = getGitRemoteUrl(cwd);
     const sameDirInstances: LaunchConflicts['sameDirInstances'] = [];
     const sameBranchInstances: LaunchConflicts['sameBranchInstances'] = [];
 
@@ -302,7 +351,15 @@ export class InstanceManager extends EventEmitter {
         sameDirInstances.push({ id: info.id, name: info.name, state: info.state });
       }
 
-      if (branch && info.gitBranch && info.gitBranch === branch && infoResolved !== resolved) {
+      // Same branch only matters within the same repository — match on
+      // remote URL, otherwise every unrelated project sitting on `main`
+      // triggers a spurious conflict. No remote on either side → can't
+      // establish identity → no warning.
+      if (
+        branch && info.gitBranch && info.gitBranch === branch &&
+        infoResolved !== resolved &&
+        remoteUrl && info.gitRemoteUrl === remoteUrl
+      ) {
         sameBranchInstances.push({ id: info.id, name: info.name, branch: info.gitBranch, cwd: info.cwd });
       }
     }
@@ -312,11 +369,16 @@ export class InstanceManager extends EventEmitter {
 
   cloneRepo(sourceCwd: string, targetDir: string): void {
     const resolved = resolvePath(sourceCwd);
-    execFileSync('git', ['clone', resolved, targetDir], {
-      encoding: 'utf-8',
-      timeout: 60_000,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    try {
+      execFileSync('git', ['clone', resolved, targetDir], {
+        encoding: 'utf-8',
+        timeout: 60_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      const stderr = (err as { stderr?: string | Buffer }).stderr?.toString().trim();
+      throw new Error(`git clone failed: ${stderr || (err instanceof Error ? err.message : String(err))}`, { cause: err });
+    }
   }
 
   launch(payload: LaunchPayload): InstanceInfo {
@@ -330,7 +392,11 @@ export class InstanceManager extends EventEmitter {
     // Create directory if requested
     if (payload.createDir) {
       const resolved = resolvePath(effectiveCwd);
-      fs.mkdirSync(resolved, { recursive: true });
+      try {
+        fs.mkdirSync(resolved, { recursive: true });
+      } catch (err) {
+        throw new Error(`Failed to create directory ${resolved}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+      }
       this.log.info(`Created directory: ${resolved}`);
     }
 
@@ -378,7 +444,7 @@ export class InstanceManager extends EventEmitter {
         setupCommands: projectConfig?.setup,
       });
     } catch (err) {
-      info.state = 'stopped';
+      this.applyStateEvent(info, { source: 'lifecycle', kind: 'spawn-failed', at: Date.now() });
       this.emit('update', info);
       return info;
     }
@@ -398,9 +464,7 @@ export class InstanceManager extends EventEmitter {
   private scheduleLaunchTransition(instanceId: string): void {
     setTimeout(() => {
       const info = this.instances.get(instanceId);
-      if (info && info.state === 'launching') {
-        info.state = 'idle';
-        info.lastUpdated = Date.now();
+      if (info && this.applyStateEvent(info, { source: 'lifecycle', kind: 'launch-timeout', at: Date.now() })) {
         this.emit('update', info);
       }
     }, 3000);
@@ -432,9 +496,7 @@ export class InstanceManager extends EventEmitter {
       doKill();
     }
     if (info) {
-      info.state = 'stopped';
-      info.stoppedAt = Date.now();
-      info.lastUpdated = Date.now();
+      this.applyStateEvent(info, { source: 'lifecycle', kind: 'kill', at: Date.now() });
       this.emit('update', info);
       this.scrollbackBuffer.flushAll();
       this.sessionStore.save(info);
@@ -444,6 +506,14 @@ export class InstanceManager extends EventEmitter {
   resume(instanceId: string): InstanceInfo | null {
     const old = this.instances.get(instanceId);
     if (!old || !old.managed) return null;
+
+    // If the old PTY somehow survived (resume on a not-actually-stopped
+    // instance), kill it — otherwise it keeps running orphaned and its hooks
+    // re-materialize the old id as a ghost instance.
+    if (this.ptyManager.has(instanceId)) {
+      this.log.info(`resume: old PTY for ${instanceId} still alive — killing it`);
+      this.ptyManager.kill(instanceId);
+    }
 
     const newId = generateInstanceId();
     const now = Date.now();
@@ -503,7 +573,7 @@ export class InstanceManager extends EventEmitter {
         resume: true,
       });
     } catch (err) {
-      info.state = 'stopped';
+      this.applyStateEvent(info, { source: 'lifecycle', kind: 'spawn-failed', at: Date.now() });
       this.emit('update', info);
       return info;
     }
@@ -517,8 +587,15 @@ export class InstanceManager extends EventEmitter {
     this.managedIds.delete(instanceId);
     this.autoNameIds.delete(instanceId);
     this.promptCount.delete(instanceId);
+    this.pendingIdleTicks.delete(instanceId);
+    this.lastPostHookAt.delete(instanceId);
     this.sessionStore.remove(instanceId);
     this.scrollbackBuffer.remove(instanceId);
+    // Delete the old status file now — the hook's own cleanup is delayed 5s
+    // and the watcher would re-add the old id as a ghost in the meantime.
+    try {
+      fs.unlinkSync(path.join(getInstancesDir(), `${instanceId}.json`));
+    } catch { /* may not exist */ }
     this.emit('remove', instanceId);
 
     return info;
@@ -528,8 +605,16 @@ export class InstanceManager extends EventEmitter {
     this.instances.delete(instanceId);
     this.managedIds.delete(instanceId);
     this.subscribers.delete(instanceId);
+    this.pendingIdleTicks.delete(instanceId);
+    this.lastPostHookAt.delete(instanceId);
     this.sessionStore.remove(instanceId);
     this.scrollbackBuffer.remove(instanceId);
+    // Remove the status file too — if the session died without a SessionEnd
+    // hook, the stale file would otherwise resurrect the dismissed instance
+    // through the discovery seed on the next restart.
+    try {
+      fs.unlinkSync(path.join(getInstancesDir(), `${instanceId}.json`));
+    } catch { /* may not exist */ }
     this.emit('remove', instanceId);
   }
 
@@ -560,11 +645,26 @@ export class InstanceManager extends EventEmitter {
     this.instances.delete(instanceId);
     this.managedIds.delete(instanceId);
     this.subscribers.delete(instanceId);
+    this.pendingIdleTicks.delete(instanceId);
+    this.lastPostHookAt.delete(instanceId);
     this.emit('remove', instanceId);
   }
 
-  handleHookUpdate(data: InstanceStatusFile): void {
+  handleHookUpdate(data: InstanceStatusFile, source: 'post' | 'file' = 'post'): void {
     const existing = this.instances.get(data.id);
+
+    // The shipped hook script both writes the status file and POSTs
+    // /api/hook, so every event used to be processed twice — and the
+    // debounced file-watch event could re-apply *stale* state after a newer
+    // POST had landed. Dedup file events against recent *POSTs* only (not
+    // against other file events): when the POST channel is dead (no curl,
+    // wrong port), the file watcher is the sole channel and consecutive
+    // file events must all apply.
+    if (source === 'file') {
+      const lastPost = this.lastPostHookAt.get(data.id);
+      if (lastPost && Date.now() - lastPost < FILE_UPDATE_DEDUP_MS) return;
+      if (data.lastUpdated && existing?.lastUpdated && existing.lastHookUpdate && data.lastUpdated < existing.lastUpdated) return;
+    }
 
     // --- Hook-event state refinement ---
     // Trust hook-reported states directly. The hook scripts already map events
@@ -587,6 +687,19 @@ export class InstanceManager extends EventEmitter {
         this.log.info(`ignoring stopped hook for ${data.id} — PTY still alive (likely subtask exit)`);
         return;
       }
+    }
+
+    // PTY exit is authoritative for managed instances: a straggler hook that
+    // fired just before the process died must not resurrect a stopped card
+    // (and persist the wrong state via the session store).
+    if (
+      existing?.state === 'stopped' &&
+      this.managedIds.has(data.id) &&
+      !this.ptyManager.has(data.id) &&
+      data.state !== 'stopped'
+    ) {
+      this.log.info(`ignoring straggler ${data.hookEvent} hook for stopped instance ${data.id}`);
+      return;
     }
     // Auto-name: derive short title from prompt, or use subtask
     let name = existing?.name || data.id;
@@ -619,30 +732,55 @@ export class InstanceManager extends EventEmitter {
     // when the current hook event isn't a prompt submit.
     const lastPrompt = data.topic || existing?.lastPrompt;
 
-    const info: InstanceInfo = {
-      id: data.id,
-      name,
-      managed: isManaged,
-      cwd,
-      project: existing?.project,
-      gitRoot: existing?.gitRoot || getGitRoot(cwd),
-      gitRemoteUrl: existing?.gitRemoteUrl || getGitRemoteUrl(cwd),
-      gitBranch: data.gitBranch,
-      state: data.state,
-      ticket: data.ticket,
-      subtask: data.subtask,
-      progress: data.progress,
-      currentTool: data.currentTool,
-      lastUpdated: data.lastUpdated,
-      model: data.model || existing?.model,
-      createdAt: existing?.createdAt,
-      claudeSessionId,
-      lastPrompt,
-    };
-    info.lastHookUpdate = Date.now();
+    // Merge into the existing record rather than rebuilding it — a rebuild
+    // silently dropped every field the hook doesn't carry (permissionMode,
+    // stoppedAt, previousInstanceId, historical, JIRA enrichment, …) and the
+    // lossy copy then got persisted.
+    let info: InstanceInfo;
+    if (existing) {
+      info = existing;
+      info.name = name;
+      info.managed = isManaged;
+      info.cwd = cwd;
+      if (!info.gitRoot) info.gitRoot = getGitRoot(cwd);
+      if (!info.gitRemoteUrl) info.gitRemoteUrl = getGitRemoteUrl(cwd);
+      if (data.gitBranch) info.gitBranch = data.gitBranch;
+      // ticket/subtask/progress mirror the *current* .mob-task.json on every
+      // hook — an empty/absent value means "cleared", so assign unconditionally
+      // (a stale progress bar would otherwise stick forever).
+      info.ticket = data.ticket;
+      info.subtask = data.subtask;
+      info.progress = data.progress;
+      info.currentTool = data.currentTool;
+      info.lastUpdated = data.lastUpdated;
+      if (data.model) info.model = data.model;
+      info.claudeSessionId = claudeSessionId;
+      info.lastPrompt = lastPrompt;
+    } else {
+      info = {
+        id: data.id,
+        name,
+        managed: isManaged,
+        cwd,
+        gitRoot: getGitRoot(cwd),
+        gitRemoteUrl: getGitRemoteUrl(cwd),
+        gitBranch: data.gitBranch,
+        state: data.state,
+        ticket: data.ticket,
+        subtask: data.subtask,
+        progress: data.progress,
+        currentTool: data.currentTool,
+        lastUpdated: data.lastUpdated,
+        model: data.model,
+        claudeSessionId,
+        lastPrompt,
+      };
+    }
+    this.applyStateEvent(info, { source: 'hook', state: data.state, at: Date.now() });
     info.lastHookEvent = data.hookEvent || existing?.lastHookEvent;
     this.applyTicketFields(info, data.ticket, data.ticketStatus);
     this.instances.set(data.id, info);
+    if (source === 'post') this.lastPostHookAt.set(data.id, Date.now());
     this.emit('update', info);
 
     // Save to session store on meaningful hook updates for managed instances
@@ -670,9 +808,7 @@ export class InstanceManager extends EventEmitter {
     for (const [id, info] of this.instances) {
       if (this.managedIds.has(id) && info.state !== 'stopped') {
         this.log.info(`marking stopped for shutdown: id=${id} name="${info.name}"`);
-        info.state = 'stopped';
-        info.stoppedAt = now;
-        info.lastUpdated = now;
+        this.applyStateEvent(info, { source: 'lifecycle', kind: 'kill', at: now });
         this.sessionStore.save(info, { autoResume: true });
       }
     }
@@ -696,11 +832,15 @@ export class InstanceManager extends EventEmitter {
               : this.staleCheckCycle % 6 === 0;   // idle: every 6th cycle (60s)
 
           if (shouldRefreshGit) {
-            const branch = getGitBranch(info.cwd);
-            if (branch && branch !== info.gitBranch) {
-              info.gitBranch = branch;
-              this.emit('update', info);
-            }
+            // Async: a sync git call here would block the event loop for
+            // every running instance on every tick.
+            getGitBranchAsync(info.cwd).then((branch) => {
+              const current = this.instances.get(id);
+              if (current && branch && branch !== current.gitBranch) {
+                current.gitBranch = branch;
+                this.emit('update', current);
+              }
+            });
           }
         }
 
@@ -708,59 +848,29 @@ export class InstanceManager extends EventEmitter {
 
         // Terminal-based state fallback for managed instances
         if (this.managedIds.has(id)) {
-          const hookSilent = !info.lastHookUpdate || (now - info.lastHookUpdate > HOOK_SILENCE_THRESHOLD_MS);
-
           // PTY dead but state still 'running'/'idle' → mark stopped
           if (!this.ptyManager.has(id)) {
             this.log.info(`stale check: PTY dead for ${id} (${info.name}), marking stopped`);
-            info.state = 'stopped';
-            info.stoppedAt = now;
-            info.lastUpdated = now;
+            this.applyStateEvent(info, { source: 'pty', kind: 'exited', at: now });
             this.emit('update', info);
             this.sessionStore.save(info);
             continue;
           }
 
-          // Always-on demotion: flip running → idle every cycle when both
-          // conditions are true:
-          //   (a) the detector returns 'idle' (no "esc to interrupt" anywhere
-          //       in the recent window — Claude isn't actively processing)
-          //   (b) an explicit idle marker (mode footer) is present in the
-          //       prompt zone — positive evidence Claude is at its prompt
-          // Both conditions are required because during running, the mode
-          // footer is still rendered (with " · esc to interrupt" appended) —
-          // we'd false-demote if we used (b) alone. This fixes "fresh Claude
-          // shows Running forever" without waiting for the hook-silence
-          // threshold.
-          if (info.state === 'running') {
-            const tail = this.scrollbackBuffer.getTail(id, 2500);
-            const detected = detectStateFromTerminal(tail);
-            if (detected === 'idle' && hasExplicitIdleMarker(tail)) {
-              this.log.info(`demote (no esc-to-interrupt + mode footer): ${id} (${info.name}) running → idle`);
-              info.state = 'idle';
-              info.lastUpdated = now;
-              this.emit('update', info);
-              continue;
-            }
-          }
-
-          // Bidirectional fallback when hooks have been silent for a while.
-          // Used to promote idle→running and demote running→idle. Notably we
-          // do NOT auto-leave the 'waiting' state from terminal detection
-          // alone: 'waiting' is set authoritatively by the PreToolUse hook
-          // when Claude is in AskUserQuestion, and the AskUserQuestion TUI
-          // doesn't render any pattern the detector can distinguish from
-          // idle. A contradicting hook event (PostToolUse / Stop) is what
-          // ends a wait.
-          if (hookSilent && info.state !== 'waiting') {
-            const tail = this.scrollbackBuffer.getTail(id, 2500);
-            const detected = detectStateFromTerminal(tail);
-            if (detected !== info.state) {
-              this.log.info(`terminal fallback: ${id} (${info.name}) ${info.state} → ${detected}`);
-              info.state = detected;
-              info.lastUpdated = now;
-              this.emit('update', info);
-            }
+          // One terminal-detection event per tick; the reducer in
+          // instance-state.ts owns precedence vs. hooks and applies
+          // hysteresis so a spinner momentarily scrolling out of the scan
+          // window can't blink the state.
+          const tail = this.scrollbackBuffer.getTail(id, 2500);
+          const changed = this.applyStateEvent(info, {
+            source: 'terminal',
+            detected: detectStateFromTerminal(tail),
+            hasIdleMarker: hasExplicitIdleMarker(tail),
+            at: now,
+          });
+          if (changed) {
+            this.log.info(`terminal state: ${id} (${info.name}) → ${info.state}`);
+            this.emit('update', info);
           }
         }
       }

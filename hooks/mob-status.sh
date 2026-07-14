@@ -82,31 +82,75 @@ TICKET_STATUS=""
 if [ -f "$CWD/.mob-task.json" ]; then
   TICKET=$(jq -r '.ticket // empty' "$CWD/.mob-task.json" 2>/dev/null || echo "")
   SUBTASK=$(jq -r '.subtask // empty' "$CWD/.mob-task.json" 2>/dev/null || echo "")
-  PROGRESS=$(jq -r '.progress // empty' "$CWD/.mob-task.json" 2>/dev/null || echo "")
+  PROGRESS=$(jq -c '.progress // empty' "$CWD/.mob-task.json" 2>/dev/null || echo "")
   TICKET_STATUS=$(jq -r '.ticketStatus // empty' "$CWD/.mob-task.json" 2>/dev/null || echo "")
 fi
 
 TIMESTAMP=$(date +%s)000
 
-# Build JSON status
-STATUS_JSON=$(cat <<ENDJSON
+# Minimal JSON string escaping for the no-jq fallback: backslash, quote,
+# and strip control chars.
+json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\000-\037'
+}
+
+# Build JSON status with jq so every field is escaped — prompts, branch
+# names, and paths can contain quotes/backslashes/control chars that would
+# silently produce invalid JSON if interpolated into a heredoc.
+STATUS_JSON=""
+if command -v jq &>/dev/null; then
+STATUS_JSON=$(jq -n \
+  --arg id "$INSTANCE_ID" \
+  --arg cwd "$CWD" \
+  --arg gitBranch "$GIT_BRANCH" \
+  --arg state "$STATE" \
+  --arg hookEvent "$HOOK_EVENT" \
+  --arg ticket "$TICKET" \
+  --arg ticketStatus "$TICKET_STATUS" \
+  --arg subtask "$SUBTASK" \
+  --arg topic "$TOPIC" \
+  --arg currentTool "$TOOL_NAME" \
+  --argjson lastUpdated "$TIMESTAMP" \
+  --arg sessionId "${SESSION_ID:-$INSTANCE_ID}" \
+  --argjson progress "${PROGRESS:-null}" \
+  '{
+    id: $id,
+    cwd: $cwd,
+    gitBranch: $gitBranch,
+    state: $state,
+    hookEvent: $hookEvent,
+    ticket: $ticket,
+    ticketStatus: $ticketStatus,
+    subtask: $subtask,
+    topic: $topic,
+    currentTool: $currentTool,
+    lastUpdated: $lastUpdated,
+    sessionId: $sessionId
+  } + (if $progress != null then {progress: $progress} else {} end)' 2>/dev/null)
+fi
+
+# Fallback when jq is missing or failed: without jq the field-extraction
+# above already degraded to empty strings, so only shell-known values need
+# escaping. Degraded reporting beats silently disappearing from the dashboard.
+if [ -z "$STATUS_JSON" ]; then
+  STATUS_JSON=$(cat <<ENDJSON
 {
-  "id": "$INSTANCE_ID",
-  "cwd": "$CWD",
-  "gitBranch": "$GIT_BRANCH",
-  "state": "$STATE",
-  "hookEvent": "$HOOK_EVENT",
-  "ticket": "$TICKET",
-  "ticketStatus": "$TICKET_STATUS",
-  "subtask": "$SUBTASK",
-  "topic": "$TOPIC",
-  $([ -n "$PROGRESS" ] && echo "\"progress\": $PROGRESS," || echo "")
-  "currentTool": "$TOOL_NAME",
+  "id": "$(json_escape "$INSTANCE_ID")",
+  "cwd": "$(json_escape "$CWD")",
+  "gitBranch": "$(json_escape "$GIT_BRANCH")",
+  "state": "$(json_escape "$STATE")",
+  "hookEvent": "$(json_escape "$HOOK_EVENT")",
+  "ticket": "$(json_escape "$TICKET")",
+  "ticketStatus": "$(json_escape "$TICKET_STATUS")",
+  "subtask": "$(json_escape "$SUBTASK")",
+  "topic": "$(json_escape "$TOPIC")",
+  "currentTool": "$(json_escape "$TOOL_NAME")",
   "lastUpdated": $TIMESTAMP,
-  "sessionId": "${SESSION_ID:-$INSTANCE_ID}"
+  "sessionId": "$(json_escape "${SESSION_ID:-$INSTANCE_ID}")"
 }
 ENDJSON
 )
+fi
 
 # Atomic write via tmp+rename
 TMP_FILE="$INSTANCES_DIR/.tmp.${INSTANCE_ID}.json"

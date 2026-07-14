@@ -22,7 +22,7 @@ export function checkWaitingNotification(
   instanceId: string,
   instanceName: string,
   newState: InstanceState,
-  soundEnabled?: boolean,
+  opts: { sound: boolean; desktop: boolean },
 ): void {
   const prev = previousStates.get(instanceId);
   previousStates.set(instanceId, newState);
@@ -30,7 +30,7 @@ export function checkWaitingNotification(
   if (newState !== 'waiting' || prev === 'waiting') return;
 
   // Play sound regardless of tab visibility (if enabled)
-  if (soundEnabled) {
+  if (opts.sound) {
     const audio = getNotificationAudio();
     audio.currentTime = 0;
     audio.play().catch(() => {}); // Ignore autoplay restrictions
@@ -38,6 +38,7 @@ export function checkWaitingNotification(
 
   // Browser notification only when tab is hidden
   if (
+    opts.desktop &&
     document.hidden &&
     'Notification' in window &&
     Notification.permission === 'granted'

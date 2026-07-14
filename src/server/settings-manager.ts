@@ -56,9 +56,13 @@ export class SettingsManager {
   private save(): void {
     const tmpPath = this.filePath + '.tmp';
     try {
-      fs.writeFileSync(tmpPath, JSON.stringify(this.settings, null, 2), 'utf-8');
+      // mode on the tmp file, not chmod-after-rename: the file holds JIRA
+      // tokens and must never be world-readable, even briefly. mode only
+      // applies on creation, so drop any leftover tmp from a crashed save
+      // (it may carry looser permissions from an older version).
+      try { fs.unlinkSync(tmpPath); } catch { /* usually doesn't exist */ }
+      fs.writeFileSync(tmpPath, JSON.stringify(this.settings, null, 2), { encoding: 'utf-8', mode: 0o600 });
       fs.renameSync(tmpPath, this.filePath);
-      try { fs.chmodSync(this.filePath, 0o600); } catch {}
     } catch (err) {
       log.error('Failed to save settings:', err);
       // Clean up tmp file if rename failed

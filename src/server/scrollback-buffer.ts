@@ -42,11 +42,15 @@ export class ScrollbackBuffer {
   getTail(instanceId: string, chars: number): string {
     const entry = this.buffers.get(instanceId);
     if (!entry || entry.chunks.length === 0) return '';
-    // Walk chunks from the end, collecting up to `chars` characters
-    let result = '';
-    for (let i = entry.chunks.length - 1; i >= 0 && result.length < chars; i--) {
-      result = entry.chunks[i] + result;
+    // Walk chunks from the end, collecting up to `chars` characters.
+    // Collect then join once — repeated string prepending is O(n²).
+    const parts: string[] = [];
+    let length = 0;
+    for (let i = entry.chunks.length - 1; i >= 0 && length < chars; i--) {
+      parts.push(entry.chunks[i]);
+      length += entry.chunks[i].length;
     }
+    const result = parts.reverse().join('');
     return result.length > chars ? result.slice(-chars) : result;
   }
 

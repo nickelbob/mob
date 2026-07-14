@@ -286,26 +286,52 @@
   // React to ID changes. Also react to instance managed/state becoming available
   // (e.g. snapshot arrives after ID was already set).
   // Use tick() so the {#if} block renders the terminal-container div before we attach.
+  //
+  // currentSubscription only updates inside attachTerminal, so a reactive
+  // re-run during the tick() microtask (e.g. an instance:update for the same
+  // id) would queue a second attach — a full unsubscribe/resubscribe that
+  // clears and repaints the terminal. Re-check at execution time and read
+  // fresh store values so queued duplicates no-op.
   $: {
     const id = $selectedInstanceId;
-    const inst = $selectedInstance;
+    void $selectedInstance;
     if (id !== currentSubscription) {
-      tick().then(() => attachTerminal(inst));
+      tick().then(() => {
+        if (get(selectedInstanceId) !== currentSubscription) {
+          attachTerminal(get(selectedInstance));
+        }
+      });
     }
   }
   // Keep isStopped in sync without re-attaching
   $: isStopped = $selectedInstance?.state === 'stopped';
 
-  // Update font size on all cached terminals when settings change
+  // Sync live-updatable options to all cached terminals when settings change.
+  // Only the attached terminal gets fit() — detached cached terminals have no
+  // DOM dimensions (fit() would compute bogus cols/rows); they re-fit on attach.
   $: {
     const fontSize = $settings.terminal.fontSize;
+    const cursorStyle = $settings.terminal.cursorStyle;
+    let changed = false;
     for (const [, cached] of terminalCache) {
       if (cached.terminal.options.fontSize !== fontSize) {
         cached.terminal.options.fontSize = fontSize;
-        cached.fitAddon.fit();
+        changed = true;
+      }
+      if (cached.terminal.options.cursorStyle !== cursorStyle) {
+        cached.terminal.options.cursorStyle = cursorStyle;
       }
     }
-    scrollToBottomIfNeeded();
+    if (changed && terminal && fitAddon && terminal.element?.isConnected) {
+      fitAddon.fit();
+      scrollToBottomIfNeeded();
+      if (currentSubscription && !isStopped) {
+        wsClient.send({
+          type: 'terminal:resize',
+          payload: { instanceId: currentSubscription, cols: terminal.cols, rows: terminal.rows },
+        });
+      }
+    }
   }
 
   // Re-subscribe terminal on WebSocket reconnect

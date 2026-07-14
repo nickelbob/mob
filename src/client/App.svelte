@@ -182,7 +182,7 @@
   {/if}
   {#if $errors.length > 0}
     <div class="error-toast-container">
-      {#each $errors.slice(-3) as err (err.timestamp)}
+      {#each $errors.slice(-3) as err (err.key)}
         <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
         <div class="error-toast" on:click={() => errors.update(e => e.filter(x => x !== err))}>
           {err.message}

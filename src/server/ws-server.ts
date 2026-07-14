@@ -9,6 +9,28 @@ import { performUpdate, getVersion, checkForUpdate, clearUpdateCache } from './u
 
 const log = createLogger('ws');
 
+/** Message types whose payload must carry a valid instanceId. */
+const INSTANCE_ID_MESSAGES = new Set([
+  'kill',
+  'resume',
+  'dismiss',
+  'terminal:subscribe',
+  'terminal:unsubscribe',
+  'terminal:input',
+  'terminal:resize',
+]);
+
+// Deliberately looser than isValidInstanceId: discovered instances can carry
+// user-chosen ids (MOB_INSTANCE_ID with dots, etc.) that must still be
+// dismissable/subscribable. This gate only needs to reject garbage payloads.
+function payloadInstanceId(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const id = (payload as { instanceId?: unknown }).instanceId;
+  if (typeof id !== 'string' || id.length === 0 || id.length > 256) return null;
+  // eslint-disable-next-line no-control-regex
+  return /[\x00-\x1f/\\]/.test(id) ? null : id;
+}
+
 export interface WsServerHandle {
   wss: WebSocketServer;
   setUpdateInfo(info: { current: string; latest: string } | null): void;
@@ -185,192 +207,221 @@ export function createWsServer(
         log.info( `Client #${clientId} → ${msg.type}`, 'payload' in msg ? (msg as any).payload : '');
       }
 
-      switch (msg.type) {
-        case 'sync':
-          ws.send(JSON.stringify({
-            type: 'snapshot',
-            payload: { instances: instanceManager.getAll(), version: getVersion(), ...(updateInfo ? { updateAvailable: updateInfo } : {}) },
-          } satisfies ServerMessage));
-          break;
+      // Reject malformed payloads up front so handlers can trust the shape.
+      if (INSTANCE_ID_MESSAGES.has(msg.type) && !payloadInstanceId((msg as any).payload)) {
+        log.warn( `Client #${clientId}: ${msg.type} with missing/invalid instanceId`);
+        ws.send(JSON.stringify({
+          type: 'error',
+          payload: { message: `Invalid payload for ${msg.type}` },
+        }));
+        return;
+      }
 
-        case 'launch:check': {
-          const checkValidation = validateLaunchPayload(msg.payload);
-          if (!checkValidation.valid) {
+      try {
+        switch (msg.type) {
+          case 'sync':
             ws.send(JSON.stringify({
-              type: 'error',
-              payload: { message: checkValidation.error },
-            }));
+              type: 'snapshot',
+              payload: { instances: instanceManager.getAll(), version: getVersion(), ...(updateInfo ? { updateAvailable: updateInfo } : {}) },
+            } satisfies ServerMessage));
+            break;
+
+          case 'launch:check': {
+            const checkValidation = validateLaunchPayload(msg.payload);
+            if (!checkValidation.valid) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                payload: { message: checkValidation.error },
+              }));
+              break;
+            }
+            const conflicts = instanceManager.checkConflicts(checkValidation.data.cwd);
+            ws.send(JSON.stringify({
+              type: 'launch:conflicts',
+              payload: conflicts,
+            } satisfies ServerMessage));
             break;
           }
-          const conflicts = instanceManager.checkConflicts(checkValidation.data.cwd);
-          ws.send(JSON.stringify({
-            type: 'launch:conflicts',
-            payload: conflicts,
-          } satisfies ServerMessage));
-          break;
-        }
 
-        case 'launch': {
-          const validation = validateLaunchPayload(msg.payload);
-          if (!validation.valid) {
-            log.warn( `Client #${clientId} launch rejected: ${validation.error}`);
-            ws.send(JSON.stringify({
-              type: 'error',
-              payload: { message: validation.error },
-            }));
-            break;
-          }
-          log.info( `Client #${clientId} launching: cwd=${validation.data.cwd} name=${validation.data.name || '(auto)'}`);
-          const info = instanceManager.launch(validation.data);
-          log.info( `Launched instance ${info.id} (${info.name})`);
-          // Auto-subscribe the launching client
-          const subs = instanceManager.subscribers.get(info.id);
-          if (subs) subs.add(ws);
-          // Tell the launching client to select this instance
-          ws.send(JSON.stringify({
-            type: 'instance:select',
-            payload: { instanceId: info.id },
-          } satisfies ServerMessage));
-          break;
-        }
-
-        case 'kill':
-          log.info( `Client #${clientId} killing instance ${msg.payload.instanceId}`);
-          instanceManager.kill(msg.payload.instanceId);
-          break;
-
-        case 'resume': {
-          log.info( `Client #${clientId} resuming instance ${msg.payload.instanceId}`);
-          const resumed = instanceManager.resume(msg.payload.instanceId);
-          if (resumed) {
-            log.info( `Resumed as new instance ${resumed.id}`);
-            const subs = instanceManager.subscribers.get(resumed.id);
+          case 'launch': {
+            const validation = validateLaunchPayload(msg.payload);
+            if (!validation.valid) {
+              log.warn( `Client #${clientId} launch rejected: ${validation.error}`);
+              ws.send(JSON.stringify({
+                type: 'error',
+                payload: { message: validation.error },
+              }));
+              break;
+            }
+            log.info( `Client #${clientId} launching: cwd=${validation.data.cwd} name=${validation.data.name || '(auto)'}`);
+            const info = instanceManager.launch(validation.data);
+            log.info( `Launched instance ${info.id} (${info.name})`);
+            // Auto-subscribe the launching client
+            const subs = instanceManager.subscribers.get(info.id);
             if (subs) subs.add(ws);
+            // Tell the launching client to select this instance
             ws.send(JSON.stringify({
               type: 'instance:select',
-              payload: { instanceId: resumed.id },
+              payload: { instanceId: info.id },
             } satisfies ServerMessage));
-          } else {
+            break;
+          }
+
+          case 'kill':
+            log.info( `Client #${clientId} killing instance ${msg.payload.instanceId}`);
+            instanceManager.kill(msg.payload.instanceId);
+            break;
+
+          case 'resume': {
+            log.info( `Client #${clientId} resuming instance ${msg.payload.instanceId}`);
+            const resumed = instanceManager.resume(msg.payload.instanceId);
+            if (resumed) {
+              log.info( `Resumed as new instance ${resumed.id}`);
+              const subs = instanceManager.subscribers.get(resumed.id);
+              if (subs) subs.add(ws);
+              ws.send(JSON.stringify({
+                type: 'instance:select',
+                payload: { instanceId: resumed.id },
+              } satisfies ServerMessage));
+            } else {
+              ws.send(JSON.stringify({
+                type: 'error',
+                payload: { message: 'Cannot resume instance', context: msg.payload.instanceId },
+              }));
+            }
+            break;
+          }
+
+          case 'dismiss':
+            log.info( `Client #${clientId} dismissing instance ${msg.payload.instanceId}`);
+            instanceManager.dismiss(msg.payload.instanceId);
+            break;
+
+          case 'terminal:subscribe': {
+            const { instanceId } = msg.payload;
+            log.info( `Client #${clientId} subscribing to ${instanceId}`);
+            // Only allow subscribing to existing instances
+            if (!instanceManager.get(instanceId)) {
+              log.warn( `Client #${clientId} tried to subscribe to non-existent instance ${instanceId}`);
+              break;
+            }
+            let subs = instanceManager.subscribers.get(instanceId);
+            if (!subs) {
+              subs = new Set();
+              instanceManager.subscribers.set(instanceId, subs);
+            }
+            subs.add(ws);
+
+            // Send scrollback history
+            const scrollback = instanceManager.getScrollback(instanceId);
+            if (scrollback) {
+              ws.send(JSON.stringify({
+                type: 'terminal:scrollback',
+                payload: { instanceId, data: scrollback },
+              } satisfies ServerMessage));
+            }
+            break;
+          }
+
+          case 'terminal:unsubscribe': {
+            const { instanceId } = msg.payload;
+            instanceManager.subscribers.get(instanceId)?.delete(ws);
+            break;
+          }
+
+          case 'terminal:input':
+            ptyManager.write(msg.payload.instanceId, msg.payload.data);
+            break;
+
+          case 'terminal:resize':
+            ptyManager.resize(
+              msg.payload.instanceId,
+              msg.payload.cols,
+              msg.payload.rows,
+            );
+            break;
+
+          case 'update:check': {
+            log.info(`Client #${clientId} requested update check`);
+            clearUpdateCache();
+            checkForUpdate()
+              .then((result) => {
+                updateInfo = result;
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: 'update:available', payload: result } satisfies ServerMessage));
+                }
+              })
+              .catch((err) => {
+                log.error(`Update check failed: ${err instanceof Error ? err.message : err}`);
+              });
+            break;
+          }
+
+          case 'update:install': {
+            if (isUpdating) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                payload: { message: 'Update already in progress' },
+              }));
+              break;
+            }
+            if (!updateInfo) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                payload: { message: 'No update available' },
+              }));
+              break;
+            }
+            isUpdating = true;
+            log.info(`Client #${clientId} triggered update to ${updateInfo.latest}`);
+            broadcast({ type: 'update:status', payload: { status: 'installing' } });
+            const result = performUpdate(updateInfo.latest);
+            if (result.success) {
+              broadcast({ type: 'update:status', payload: { status: 'success' } });
+              // Give clients a moment to receive the success message before restarting
+              setTimeout(() => {
+                if (restartCallback) restartCallback();
+              }, 1000);
+            } else {
+              isUpdating = false;
+              broadcast({ type: 'update:status', payload: { status: 'failed', error: result.error } });
+            }
+            break;
+          }
+
+          case 'instance:edit': {
+            const editValidation = validateEditPayload(msg.payload);
+            if (!editValidation.valid) {
+              ws.send(JSON.stringify({ type: 'error', payload: { message: editValidation.error } }));
+              break;
+            }
+            const { instanceId: editId, ...editFields } = editValidation.data;
+            log.info(`Client #${clientId} editing instance ${editId}:`, editFields);
+            const edited = instanceManager.editInstance(editId, editFields);
+            if (!edited) {
+              ws.send(JSON.stringify({ type: 'error', payload: { message: 'Cannot edit instance', context: editId } }));
+            }
+            break;
+          }
+
+          default:
+            log.warn( `Client #${clientId}: unknown message type: ${(msg as any).type}`);
             ws.send(JSON.stringify({
               type: 'error',
-              payload: { message: 'Cannot resume instance', context: msg.payload.instanceId },
+              payload: { message: `Unknown message type: ${(msg as any).type}` },
             }));
-          }
-          break;
         }
-
-        case 'dismiss':
-          log.info( `Client #${clientId} dismissing instance ${msg.payload.instanceId}`);
-          instanceManager.dismiss(msg.payload.instanceId);
-          break;
-
-        case 'terminal:subscribe': {
-          const { instanceId } = msg.payload;
-          log.info( `Client #${clientId} subscribing to ${instanceId}`);
-          // Only allow subscribing to existing instances
-          if (!instanceManager.get(instanceId)) {
-            log.warn( `Client #${clientId} tried to subscribe to non-existent instance ${instanceId}`);
-            break;
-          }
-          let subs = instanceManager.subscribers.get(instanceId);
-          if (!subs) {
-            subs = new Set();
-            instanceManager.subscribers.set(instanceId, subs);
-          }
-          subs.add(ws);
-
-          // Send scrollback history
-          const scrollback = instanceManager.getScrollback(instanceId);
-          if (scrollback) {
-            ws.send(JSON.stringify({
-              type: 'terminal:scrollback',
-              payload: { instanceId, data: scrollback },
-            } satisfies ServerMessage));
-          }
-          break;
-        }
-
-        case 'terminal:unsubscribe': {
-          const { instanceId } = msg.payload;
-          instanceManager.subscribers.get(instanceId)?.delete(ws);
-          break;
-        }
-
-        case 'terminal:input':
-          ptyManager.write(msg.payload.instanceId, msg.payload.data);
-          break;
-
-        case 'terminal:resize':
-          ptyManager.resize(
-            msg.payload.instanceId,
-            msg.payload.cols,
-            msg.payload.rows,
-          );
-          break;
-
-        case 'update:check': {
-          log.info(`Client #${clientId} requested update check`);
-          clearUpdateCache();
-          checkForUpdate().then((result) => {
-            updateInfo = result;
-            ws.send(JSON.stringify({ type: 'update:available', payload: result } satisfies ServerMessage));
-          });
-          break;
-        }
-
-        case 'update:install': {
-          if (isUpdating) {
-            ws.send(JSON.stringify({
-              type: 'error',
-              payload: { message: 'Update already in progress' },
-            }));
-            break;
-          }
-          if (!updateInfo) {
-            ws.send(JSON.stringify({
-              type: 'error',
-              payload: { message: 'No update available' },
-            }));
-            break;
-          }
-          isUpdating = true;
-          log.info(`Client #${clientId} triggered update to ${updateInfo.latest}`);
-          broadcast({ type: 'update:status', payload: { status: 'installing' } });
-          const result = performUpdate(updateInfo.latest);
-          if (result.success) {
-            broadcast({ type: 'update:status', payload: { status: 'success' } });
-            // Give clients a moment to receive the success message before restarting
-            setTimeout(() => {
-              if (restartCallback) restartCallback();
-            }, 1000);
-          } else {
-            isUpdating = false;
-            broadcast({ type: 'update:status', payload: { status: 'failed', error: result.error } });
-          }
-          break;
-        }
-
-        case 'instance:edit': {
-          const editValidation = validateEditPayload(msg.payload);
-          if (!editValidation.valid) {
-            ws.send(JSON.stringify({ type: 'error', payload: { message: editValidation.error } }));
-            break;
-          }
-          const { instanceId: editId, ...editFields } = editValidation.data;
-          log.info(`Client #${clientId} editing instance ${editId}:`, editFields);
-          const edited = instanceManager.editInstance(editId, editFields);
-          if (!edited) {
-            ws.send(JSON.stringify({ type: 'error', payload: { message: 'Cannot edit instance', context: editId } }));
-          }
-          break;
-        }
-
-        default:
-          log.warn( `Client #${clientId}: unknown message type: ${(msg as any).type}`);
+      } catch (err) {
+        // A handler threw. Report to the client instead of letting the throw
+        // reach uncaughtException, which would shut down the whole server.
+        const message = err instanceof Error ? err.message : String(err);
+        log.error( `Client #${clientId}: error handling ${msg.type}: ${message}`);
+        if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type: 'error',
-            payload: { message: `Unknown message type: ${(msg as any).type}` },
+            payload: { message: `Failed to handle ${msg.type}: ${message}` },
           }));
+        }
       }
     });
 

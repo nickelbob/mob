@@ -162,6 +162,25 @@ Three layers:
 
 See `CLAUDE.md` for detailed architecture documentation.
 
+## Security Model
+
+Mob is a single-user tool that binds to `127.0.0.1` by default and has no
+authentication. Web-based attacks are blocked at the boundary: the WebSocket
+server rejects connections from non-localhost `Origin`s, and — when bound to
+loopback (the default) — the HTTP API rejects requests whose `Host` header is
+a domain name (DNS-rebinding protection). Two risks are deliberately accepted
+for a localhost tool:
+
+- **Local processes are trusted.** Any process running as your user can
+  connect to the WS/HTTP API (including `POST /api/hook`) and drive terminal
+  sessions — same trust level as your shell.
+- **JIRA tokens live in `~/.mob/settings.json`** (mode `600`), readable by
+  your user account.
+
+If you set `MOB_HOST` to expose the dashboard beyond localhost, anyone who
+can reach that address gets full control of your terminal sessions — only do
+this on a network you trust.
+
 ## Uninstalling Hooks
 
 ```bash

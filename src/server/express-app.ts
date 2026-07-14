@@ -1,22 +1,59 @@
 import express from 'express';
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import fs from 'fs';
+import net from 'net';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import type { InstanceManager } from './instance-manager.js';
 import type { SettingsManager } from './settings-manager.js';
-import { shellQuote, validateHookPayload } from './util/sanitize.js';
+import { validateHookPayload, isPathWithinHome } from './util/sanitize.js';
 import { buildOAuthAuthorizeUrl, exchangeOAuthCode, fetchCloudId } from './jira-client.js';
 import { createLogger } from './util/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const log = createLogger('http');
 
+/**
+ * DNS-rebinding guard. A malicious page can point its own domain at
+ * 127.0.0.1 and then issue same-origin requests to this server — the Host
+ * header is the attacker's domain. Legitimate localhost access always uses
+ * `localhost` or an IP literal, so reject domain names.
+ */
+function isAllowedHost(hostHeader: string | undefined): boolean {
+  if (!hostHeader) return false;
+  const hostname = hostHeader.startsWith('[')
+    ? hostHeader.slice(1, hostHeader.indexOf(']'))
+    : hostHeader.split(':')[0];
+  return hostname === 'localhost' || net.isIP(hostname) !== 0;
+}
+
+/**
+ * The guard only makes sense for the default loopback binding. Setting
+ * MOB_HOST to a non-loopback address is an explicit opt-in to network
+ * exposure (see README "Security Model") where clients legitimately use
+ * arbitrary DNS names (mDNS, Tailscale, …) — rebinding protection is
+ * meaningless there, so don't break it.
+ */
+function shouldEnforceHostCheck(): boolean {
+  const bind = process.env.MOB_HOST;
+  return !bind || bind === '127.0.0.1' || bind === 'localhost' || bind === '::1';
+}
+
 export function createApp(instanceManager: InstanceManager, settingsManager: SettingsManager): express.Application {
   const app = express();
   app.use(express.json());
+
+  const enforceHostCheck = shouldEnforceHostCheck();
+  app.use((req, res, next) => {
+    if (enforceHostCheck && !isAllowedHost(req.headers.host)) {
+      log.warn(`Rejected request with disallowed Host header: ${req.headers.host}`);
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    next();
+  });
 
   // Request logging for API routes
   app.use('/api', (req, _res, next) => {
@@ -60,6 +97,13 @@ export function createApp(instanceManager: InstanceManager, settingsManager: Set
     const prefix = endsWithSep ? '' : path.basename(expanded);
 
     const resolvedDir = path.resolve(dir);
+
+    // Confine autocomplete to the user's home directory — this endpoint
+    // would otherwise enumerate arbitrary filesystem structure.
+    if (!isPathWithinHome(resolvedDir)) {
+      res.json([]);
+      return;
+    }
 
     try {
       const entries = fs.readdirSync(resolvedDir, { withFileTypes: true });

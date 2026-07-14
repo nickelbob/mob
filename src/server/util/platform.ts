@@ -1,7 +1,7 @@
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
-import { execFileSync } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 
 export function getDefaultShell(): string {
   if (process.platform === 'win32') {
@@ -53,14 +53,17 @@ export function resolvePath(p: string): string {
   return path.resolve(resolved);
 }
 
-export function getGitRemoteUrl(cwd: string): string | undefined {
+function expandHome(cwd: string): string {
+  if (cwd.startsWith('~/') || cwd === '~') {
+    return os.homedir() + cwd.slice(1);
+  }
+  return cwd;
+}
+
+function gitSync(cwd: string, args: string[]): string | undefined {
   try {
-    let resolved = cwd;
-    if (resolved.startsWith('~/') || resolved === '~') {
-      resolved = os.homedir() + resolved.slice(1);
-    }
-    return execFileSync('git', ['remote', 'get-url', 'origin'], {
-      cwd: resolved,
+    return execFileSync('git', args, {
+      cwd: expandHome(cwd),
       encoding: 'utf-8',
       timeout: 3000,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -68,38 +71,48 @@ export function getGitRemoteUrl(cwd: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function gitAsync(cwd: string, args: string[]): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    execFile('git', args, {
+      cwd: expandHome(cwd),
+      encoding: 'utf-8',
+      timeout: 3000,
+    }, (err, stdout) => {
+      resolve(err ? undefined : stdout.trim() || undefined);
+    });
+  });
+}
+
+// Remote URL and repo root never change for a given cwd during a server's
+// lifetime — cache successful lookups so hook updates and launches don't
+// repeatedly block the event loop on git subprocesses. Failures aren't
+// cached (a directory can become a repo later).
+const gitRemoteUrlCache = new Map<string, string>();
+const gitRootCache = new Map<string, string>();
+
+export function getGitRemoteUrl(cwd: string): string | undefined {
+  const cached = gitRemoteUrlCache.get(cwd);
+  if (cached !== undefined) return cached;
+  const value = gitSync(cwd, ['remote', 'get-url', 'origin']);
+  if (value !== undefined) gitRemoteUrlCache.set(cwd, value);
+  return value;
 }
 
 export function getGitRoot(cwd: string): string | undefined {
-  try {
-    let resolved = cwd;
-    if (resolved.startsWith('~/') || resolved === '~') {
-      resolved = os.homedir() + resolved.slice(1);
-    }
-    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd: resolved,
-      encoding: 'utf-8',
-      timeout: 3000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim() || undefined;
-  } catch {
-    return undefined;
-  }
+  const cached = gitRootCache.get(cwd);
+  if (cached !== undefined) return cached;
+  const value = gitSync(cwd, ['rev-parse', '--show-toplevel']);
+  if (value !== undefined) gitRootCache.set(cwd, value);
+  return value;
 }
 
 export function getGitBranch(cwd: string): string | undefined {
-  try {
-    let resolved = cwd;
-    if (resolved.startsWith('~/') || resolved === '~') {
-      resolved = os.homedir() + resolved.slice(1);
-    }
-    return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: resolved,
-      encoding: 'utf-8',
-      timeout: 3000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim() || undefined;
-  } catch {
-    return undefined;
-  }
+  return gitSync(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
+}
+
+/** Async branch lookup for periodic refresh — never blocks the event loop. */
+export function getGitBranchAsync(cwd: string): Promise<string | undefined> {
+  return gitAsync(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
 }

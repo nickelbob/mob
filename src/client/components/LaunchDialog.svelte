@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { showLaunchDialog, wsClient, settings, launchConflicts, instances, groupNames } from '../lib/stores.js';
+  import { showLaunchDialog, wsClient, settings, launchConflicts, instances, groupNames, errors } from '../lib/stores.js';
   import { get } from 'svelte/store';
   import type { LaunchConflicts } from '../lib/types.js';
 
@@ -45,8 +45,10 @@
 
   onDestroy(() => {
     if (debounceTimer) clearTimeout(debounceTimer);
+    if (checkTimeout) clearTimeout(checkTimeout);
     abortController?.abort();
     unsubConflicts();
+    unsubErrors();
   });
 
   function onCwdInput() {
@@ -93,9 +95,32 @@
   let cloneDir = '';
   let showCloneInput = false;
 
+  // In-flight guard: a double-click on Launch would send two launch:check
+  // messages and end up launching two instances.
+  let checkingLaunch = false;
+  let checkTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  function clearCheckState() {
+    checkingLaunch = false;
+    if (checkTimeout) {
+      clearTimeout(checkTimeout);
+      checkTimeout = null;
+    }
+  }
+
+  // The server answers an invalid launch:check with an `error` message, not
+  // a launch:conflicts one — re-enable the button so the user can fix the
+  // input and retry instead of waiting out the safety timeout.
+  let initialErrors = true;
+  const unsubErrors = errors.subscribe(() => {
+    if (initialErrors) { initialErrors = false; return; }
+    if (checkingLaunch) clearCheckState();
+  });
+
   // Subscribe to conflict responses
   const unsubConflicts = launchConflicts.subscribe((c) => {
     if (!c) return;
+    clearCheckState();
     if (!c.cwdExists) {
       showCwdMissing = true;
       conflicts = c;
@@ -129,6 +154,10 @@
       alert('Working directory is required');
       return;
     }
+    if (checkingLaunch) return;
+    checkingLaunch = true;
+    // Safety valve: if the server never answers (reconnect gap), re-enable
+    checkTimeout = setTimeout(() => { checkingLaunch = false; }, 5000);
     // Check for conflicts first
     wsClient.send({
       type: 'launch:check',
@@ -397,7 +426,7 @@
     {:else}
       <div class="actions">
         <button class="cancel-btn" on:click={cancel}>Cancel</button>
-        <button class="launch-btn" on:click={launch}>Launch (Ctrl+Enter)</button>
+        <button class="launch-btn" on:click={launch} disabled={checkingLaunch}>Launch (Ctrl+Enter)</button>
       </div>
     {/if}
   </div>

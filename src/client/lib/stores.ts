@@ -19,7 +19,10 @@ export const showLaunchDialog = writable(false);
 export const showSettingsDialog = writable(false);
 export const settings = writable<Settings>(structuredClone(DEFAULT_SETTINGS));
 export const sidebarCollapsed = writable(false);
-export const errors = writable<Array<{ message: string; context?: string; timestamp: number }>>([]);
+// `key` is a monotonic counter used as the keyed-each key — two errors in the
+// same millisecond would collide on timestamp.
+let errorKey = 0;
+export const errors = writable<Array<{ message: string; context?: string; timestamp: number; key: number }>>([]);
 export const updateAvailable = writable<{ current: string; latest: string } | null>(null);
 export const updateStatus = writable<'idle' | 'installing' | 'success' | 'failed'>('idle');
 export const updateError = writable<string | null>(null);
@@ -126,6 +129,13 @@ wsClient.setConnectionHandler((connected) => {
   wsConnected.set(connected);
 });
 
+// Instances removed recently: a late instance:update racing the removal
+// would otherwise resurrect a ghost card (its terminal cache is already
+// disposed). New instances also arrive via instance:update, so we can't just
+// ignore unknown ids — only recently-removed ones.
+const recentlyRemoved = new Map<string, number>();
+const RECENTLY_REMOVED_TTL_MS = 5_000;
+
 // Event emitter for instance removal (used by TerminalPanel for cache cleanup)
 type InstanceRemoveHandler = (instanceId: string) => void;
 const instanceRemoveHandlers = new Set<InstanceRemoveHandler>();
@@ -138,6 +148,7 @@ wsClient.onMessage((msg) => {
   switch (msg.type) {
     case 'snapshot': {
       const map = new Map(msg.payload.instances.map((i) => [i.id, i]));
+      recentlyRemoved.clear(); // snapshot is authoritative
       instances.set(map);
       if (msg.payload.version) {
         serverVersion.set(msg.payload.version);
@@ -152,17 +163,28 @@ wsClient.onMessage((msg) => {
       }
       break;
     }
-    case 'instance:update':
+    case 'instance:update': {
+      const removedAt = recentlyRemoved.get(msg.payload.id);
+      if (removedAt !== undefined) {
+        if (Date.now() - removedAt < RECENTLY_REMOVED_TTL_MS) break;
+        recentlyRemoved.delete(msg.payload.id);
+      }
       instances.update((map) => {
         map.set(msg.payload.id, msg.payload);
         return new Map(map);
       });
-      if (get(settings).general.notifications) {
-        const s = get(settings);
-        checkWaitingNotification(msg.payload.id, msg.payload.name, msg.payload.state, s.general.notificationSound);
-      }
+      // Always track state transitions so notifications toggled on
+      // mid-session still see the correct previous state; each output
+      // channel is gated separately inside.
+      const s = get(settings);
+      checkWaitingNotification(msg.payload.id, msg.payload.name, msg.payload.state, {
+        sound: s.general.notificationSound,
+        desktop: s.general.notifications,
+      });
       break;
+    }
     case 'instance:remove':
+      recentlyRemoved.set(msg.payload.instanceId, Date.now());
       instances.update((map) => {
         map.delete(msg.payload.instanceId);
         return new Map(map);
@@ -182,7 +204,7 @@ wsClient.onMessage((msg) => {
     case 'error':
       errors.update((errs) => [
         ...errs.slice(-19), // keep last 20
-        { message: msg.payload.message, context: msg.payload.context, timestamp: Date.now() },
+        { message: msg.payload.message, context: msg.payload.context, timestamp: Date.now(), key: errorKey++ },
       ]);
       break;
     case 'update:status':
