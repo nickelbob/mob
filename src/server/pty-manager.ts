@@ -144,6 +144,26 @@ export interface IPtyManager {
   on(event: 'error', listener: (instanceId: string, error: unknown) => void): this;
 }
 
+/**
+ * Remove env vars that Claude Code sets for itself and its children. If Mob was
+ * launched from inside a Claude Code session, these leak into every spawned PTY
+ * and make the nested `claude` think it's a child session (e.g. disabling
+ * transcript persistence).
+ */
+const CLAUDE_SESSION_ENV_KEYS = [
+  'CLAUDECODE',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_SSE_PORT',
+  'CLAUDE_CODE_SESSION_ID',
+];
+
+function stripClaudeSessionEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env };
+  for (const key of CLAUDE_SESSION_ENV_KEYS) delete out[key];
+  return out;
+}
+
 export class PtyManager extends EventEmitter implements IPtyManager {
   private ptys = new Map<string, IPty>();
 
@@ -168,7 +188,7 @@ export class PtyManager extends EventEmitter implements IPtyManager {
         rows: 30,
         cwd: resolvedCwd,
         env: {
-          ...process.env,
+          ...stripClaudeSessionEnv(process.env),
           MOB_INSTANCE_ID: instanceId,
           TERM: 'xterm-256color',
         } as Record<string, string>,
