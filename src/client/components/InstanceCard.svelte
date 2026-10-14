@@ -113,15 +113,14 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="card" class:selected class:needs-input={needsInput} on:click={select} on:mousedown|preventDefault role="button" tabindex="-1" on:keypress={select}>
   <div class="card-header">
     {#if renaming}
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <input class="rename-input" type="text" bind:value={renameName} bind:this={renameInput}
              on:keydown={handleRenameKeydown} on:blur={saveRename}
              on:click|stopPropagation on:mousedown|stopPropagation />
     {:else}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <span class="name" on:dblclick={startRename} title={instance.ticketTitle ? `${instance.name} — double-click to rename` : 'Double-click to rename'}>{displayName}</span>
     {/if}
     <div class="header-right">
@@ -132,7 +131,7 @@
       {/if}
       <StatusBadge state={instance.state} />
       {#if !editing}
-        {#if instance.managed && instance.state === 'stopped'}
+        {#if instance.state === 'stopped' && (instance.managed || instance.claudeSessionId)}
           <button class="resume-btn" on:click={resume} title="Resume session">Resume</button>
           <button class="dismiss-btn" on:click={dismiss} title="Dismiss">✕</button>
         {:else if instance.managed && instance.state !== 'stopped'}
@@ -145,25 +144,25 @@
   </div>
 
   {#if editing}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="edit-panel" on:click|stopPropagation on:mousedown|stopPropagation on:keydown={handleEditKeydown}>
       <div class="edit-field">
-        <label>Name</label>
-        <input type="text" bind:value={editName} />
+        <label for="mob-edit-name-{instance.id}">Name</label>
+        <input id="mob-edit-name-{instance.id}" type="text" bind:value={editName} />
       </div>
       <div class="edit-field">
-        <label>Project / Group</label>
-        <input type="text" bind:value={editProject} placeholder="(auto-detected)" list="mob-group-names-{instance.id}" />
+        <label for="mob-edit-project-{instance.id}">Project / Group</label>
+        <input id="mob-edit-project-{instance.id}" type="text" bind:value={editProject} placeholder="(auto-detected)" list="mob-group-names-{instance.id}" />
         <datalist id="mob-group-names-{instance.id}">
-          {#each $groupNames as gn}
-            <option value={gn} />
+          {#each $groupNames as gn (gn)}
+            <option value={gn}></option>
           {/each}
         </datalist>
       </div>
       <div class="edit-row">
         <div class="edit-field">
-          <label>Model</label>
-          <select bind:value={editModel}>
+          <label for="mob-edit-model-{instance.id}">Model</label>
+          <select id="mob-edit-model-{instance.id}" bind:value={editModel}>
             <option value="">Default</option>
             <option value="claude-opus-4-6">Opus 4.6</option>
             <option value="claude-sonnet-4-6">Sonnet 4.6</option>
@@ -171,8 +170,8 @@
           </select>
         </div>
         <div class="edit-field">
-          <label>Permission</label>
-          <select bind:value={editPermissionMode}>
+          <label for="mob-edit-perm-{instance.id}">Permission</label>
+          <select id="mob-edit-perm-{instance.id}" bind:value={editPermissionMode}>
             <option value="">Default</option>
             <option value="default">Ask</option>
             <option value="plan">Plan</option>

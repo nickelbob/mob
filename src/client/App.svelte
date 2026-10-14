@@ -70,7 +70,7 @@
     if (matchesShortcut(e, s.resumeInstance, isMac)) {
       e.preventDefault();
       const inst = $selectedInstance;
-      if (inst && inst.managed && inst.state === 'stopped') {
+      if (inst && inst.state === 'stopped' && (inst.managed || inst.claudeSessionId)) {
         wsClient.send({ type: 'resume', payload: { instanceId: inst.id } });
       }
     }
@@ -86,7 +86,7 @@
     if (matchesShortcut(e, s.dismissInstance, isMac)) {
       e.preventDefault();
       const inst = $selectedInstance;
-      if (inst && inst.managed && inst.state === 'stopped') {
+      if (inst && inst.state === 'stopped') {
         wsClient.send({ type: 'dismiss', payload: { instanceId: inst.id } });
       }
     }

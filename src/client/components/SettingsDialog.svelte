@@ -16,7 +16,6 @@
   }
   let oauthConnecting = false;
   $: oauthConnected = !!(localSettings.jira.oauthAccessToken && localSettings.jira.oauthAccessToken !== '');
-  $: hasBasicAuth = !!(localSettings.jira.email && localSettings.jira.apiToken);
 
   async function startOAuthFlow() {
     oauthConnecting = true;
@@ -170,14 +169,14 @@
 
 <svelte:window on:keydown={handleKeydown} />
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_interactive_supports_focus -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="overlay" on:click={close} role="dialog" tabindex="-1">
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
   <div class="dialog" on:click|stopPropagation role="document">
     <h2>Settings</h2>
 
     <div class="tabs">
-      {#each tabs as tab}
+      {#each tabs as tab (tab.id)}
         <button
           class="tab"
           class:active={activeTab === tab.id}
@@ -191,7 +190,7 @@
     <div class="tab-content">
       {#if activeTab === 'shortcuts'}
         <div class="shortcuts-table">
-          {#each Object.entries(shortcutLabels) as [key, label]}
+          {#each Object.entries(shortcutLabels) as [key, label] (key)}
             <div class="shortcut-row">
               <span class="shortcut-label">{label}</span>
               <span class="shortcut-binding">

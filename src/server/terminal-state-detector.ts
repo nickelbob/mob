@@ -2,9 +2,16 @@ import type { InstanceState } from '../shared/protocol.js';
 
 // Strip ANSI escape sequences so pattern matching works on clean text.
 // Covers CSI (including DEC private mode like ?2026h), OSC, and charset selection.
-const ANSI_RE = /\x1B(?:\[[\x20-\x3F]*[\x40-\x7E]|\][^\x07]*\x07|\([A-B0-2])/g;
-function stripAnsi(s: string): string {
-  return s.replace(ANSI_RE, '');
+// OSC ends at BEL or ST (ESC \) — Claude's OSC 8 hyperlinks use ST, and an OSC
+// must never run across a bare ESC or it swallows everything up to the next BEL.
+// eslint-disable-next-line no-control-regex -- matching raw terminal escape bytes is the point
+const ANSI_RE = /\x1B(?:\[[\x20-\x3F]*[\x40-\x7E]|\][^\x07\x1B]*(?:\x07|\x1B\\)|\([A-B0-2])/g;
+// Cursor-forward is how the TUI paints the gap between words on a partially
+// redrawn line ("esc\x1B[1Cto interrupt"), so it must become a space, not vanish.
+// eslint-disable-next-line no-control-regex
+const CUF_RE = /\x1B\[\d*C/g;
+export function stripAnsi(s: string): string {
+  return s.replace(CUF_RE, ' ').replace(ANSI_RE, '');
 }
 
 // Last N chars used for prompt-zone checks (waiting + explicit idle markers).

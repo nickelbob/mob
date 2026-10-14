@@ -1,5 +1,4 @@
 import path from 'path';
-import os from 'os';
 import { getMobDir } from './platform.js';
 
 /**

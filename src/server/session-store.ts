@@ -11,6 +11,8 @@ export interface SessionData {
   id: string;
   name: string;
   cwd: string;
+  /** Absent in files written before external-session persistence → treated as true. */
+  managed?: boolean;
   project?: string;
   gitBranch?: string;
   model?: string;
@@ -18,10 +20,28 @@ export interface SessionData {
   claudeSessionId?: string;
   previousInstanceId?: string;
   createdAt: number;
+  /** Last hook/terminal activity — expiry keys on this, not createdAt, so a
+   *  long-lived session that never stopped cleanly isn't pruned by age. */
+  lastActivityAt?: number;
   stoppedAt?: number;
   ticket?: string;
   subtask?: string;
   autoResume?: boolean;
+}
+
+export function lastActiveOf(
+  data: Pick<SessionData, 'createdAt' | 'lastActivityAt' | 'stoppedAt'>
+): number {
+  return data.stoppedAt ?? data.lastActivityAt ?? data.createdAt;
+}
+
+export function isExpired(
+  data: Pick<SessionData, 'id' | 'createdAt' | 'lastActivityAt' | 'stoppedAt'>,
+  now: number,
+  isAlive?: (id: string) => boolean
+): boolean {
+  if (isAlive?.(data.id)) return false;
+  return lastActiveOf(data) < now - SESSION_MAX_AGE_MS;
 }
 
 export class SessionStore {
@@ -30,6 +50,7 @@ export class SessionStore {
       id: instance.id,
       name: instance.name,
       cwd: instance.cwd,
+      managed: instance.managed,
       project: instance.project,
       gitBranch: instance.gitBranch,
       model: instance.model,
@@ -37,6 +58,7 @@ export class SessionStore {
       claudeSessionId: instance.claudeSessionId,
       previousInstanceId: instance.previousInstanceId,
       createdAt: instance.createdAt || Date.now(),
+      lastActivityAt: instance.lastUpdated || Date.now(),
       stoppedAt: instance.stoppedAt,
       ticket: instance.ticket,
       subtask: instance.subtask,
@@ -53,9 +75,9 @@ export class SessionStore {
     }
   }
 
-  loadAll(): (InstanceInfo & { autoResume?: boolean })[] {
+  loadAll(isAlive?: (id: string) => boolean): (InstanceInfo & { autoResume?: boolean })[] {
     const dir = getSessionsDir();
-    const cutoff = Date.now() - SESSION_MAX_AGE_MS;
+    const now = Date.now();
     const instances: (InstanceInfo & { autoResume?: boolean })[] = [];
 
     let files: string[];
@@ -71,9 +93,7 @@ export class SessionStore {
         const raw = fs.readFileSync(filePath, 'utf8');
         const data: SessionData = JSON.parse(raw);
 
-        // Skip expired sessions
-        const lastActive = data.stoppedAt || data.createdAt;
-        if (lastActive < cutoff) {
+        if (isExpired(data, now, isAlive)) {
           this.removeFiles(data.id);
           continue;
         }
@@ -81,14 +101,14 @@ export class SessionStore {
         instances.push({
           id: data.id,
           name: data.name,
-          managed: true,
+          managed: data.managed ?? true,
           cwd: data.cwd,
           project: data.project,
           gitRoot: getGitRoot(data.cwd),
           gitRemoteUrl: getGitRemoteUrl(data.cwd),
           gitBranch: getGitBranch(data.cwd) || data.gitBranch,
           state: 'stopped',
-          lastUpdated: data.stoppedAt || data.createdAt,
+          lastUpdated: lastActiveOf(data),
           model: data.model,
           permissionMode: data.permissionMode,
           claudeSessionId: data.claudeSessionId,
@@ -109,9 +129,9 @@ export class SessionStore {
     return instances;
   }
 
-  pruneExpired(): void {
+  pruneExpired(isAlive?: (id: string) => boolean): void {
     const dir = getSessionsDir();
-    const cutoff = Date.now() - SESSION_MAX_AGE_MS;
+    const now = Date.now();
     let pruned = 0;
 
     let files: string[];
@@ -126,8 +146,7 @@ export class SessionStore {
         const filePath = path.join(dir, file);
         const raw = fs.readFileSync(filePath, 'utf8');
         const data: SessionData = JSON.parse(raw);
-        const lastActive = data.stoppedAt || data.createdAt;
-        if (lastActive < cutoff) {
+        if (isExpired(data, now, isAlive)) {
           this.removeFiles(data.id);
           pruned++;
         }

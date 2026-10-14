@@ -130,19 +130,30 @@ Log "JSON=$Json"
 try {
     $TmpFile = Join-Path $InstancesDir ".tmp.$InstanceId.json"
     $FinalFile = Join-Path $InstancesDir "$InstanceId.json"
-    $Json | Out-File -FilePath $TmpFile -Encoding UTF8 -NoNewline
+    # BOM-less UTF-8: PS 5.1's Out-File -Encoding UTF8 emits a BOM, which the
+    # server's JSON.parse used to choke on
+    [System.IO.File]::WriteAllText($TmpFile, $Json, (New-Object System.Text.UTF8Encoding $false))
     Move-Item -Force $TmpFile $FinalFile
     Log "File written OK"
 } catch {
     Log "File write FAILED: $_"
 }
 
-# Best-effort POST (bypass system proxy, use 127.0.0.1 to avoid IPv6)
+# Best-effort POST (bypass system proxy, 127.0.0.1 to avoid IPv6, 1s cap so a
+# wedged-but-listening mob server can't stall the hook for WebClient's 100s default)
 try {
-    $wc = New-Object System.Net.WebClient
-    $wc.Proxy = $null
-    $wc.Headers.Add("Content-Type", "application/json")
-    $wc.UploadString("http://127.0.0.1:${MobPort}/api/hook", $Json) | Out-Null
+    $req = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:${MobPort}/api/hook")
+    $req.Method = "POST"
+    $req.ContentType = "application/json"
+    $req.Proxy = $null
+    $req.Timeout = 1000
+    $req.ReadWriteTimeout = 1000
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Json)
+    $req.ContentLength = $bytes.Length
+    $stream = $req.GetRequestStream()
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Close()
+    $req.GetResponse().Close()
     Log "POST OK"
 } catch {
     Log "POST failed: $_"

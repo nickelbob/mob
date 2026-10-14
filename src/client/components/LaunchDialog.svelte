@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { showLaunchDialog, wsClient, settings, launchConflicts, instances, groupNames, errors } from '../lib/stores.js';
+  import { showLaunchDialog, wsClient, settings, launchConflicts, groupNames, errors } from '../lib/stores.js';
   import { get } from 'svelte/store';
   import type { LaunchConflicts } from '../lib/types.js';
 
@@ -273,7 +273,7 @@
 
 <svelte:window on:keydown={handleKeydown} />
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_interactive_supports_focus -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="overlay" on:click={cancel} role="dialog" tabindex="-1">
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
   <div class="dialog" on:click|stopPropagation={() => { showSuggestions = false; }} role="document">
@@ -315,8 +315,8 @@
         </div>
         {#if showSuggestions}
           <ul class="suggestions">
-            {#each suggestions as s, i}
-              <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+            {#each suggestions as s, i (s.display)}
+              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
               <li
                 class:selected={i === selectedSuggestion}
                 on:mousedown={() => selectSuggestion(s)}
@@ -333,8 +333,8 @@
       <label for="mob-launch-project">Project / Group</label>
       <input id="mob-launch-project" type="text" bind:value={project} placeholder="(auto-detected from repo)" list="mob-launch-group-names" />
       <datalist id="mob-launch-group-names">
-        {#each $groupNames as gn}
-          <option value={gn} />
+        {#each $groupNames as gn (gn)}
+          <option value={gn}></option>
         {/each}
       </datalist>
     </div>
@@ -393,13 +393,13 @@
     {:else if showConflictWarning && conflicts}
       <div class="conflict-warning">
         <div class="conflict-header">Conflicts detected</div>
-        {#each conflicts.sameDirInstances as inst}
+        {#each conflicts.sameDirInstances as inst (inst.id)}
           <div class="conflict-item">
             <span class="conflict-icon">&#x26A0;</span>
             <span><strong>{inst.name}</strong> is already {inst.state} in this directory</span>
           </div>
         {/each}
-        {#each conflicts.sameBranchInstances as inst}
+        {#each conflicts.sameBranchInstances as inst (inst.id)}
           <div class="conflict-item">
             <span class="conflict-icon">&#x26A0;</span>
             <span><strong>{inst.name}</strong> is on the same branch <code>{inst.branch}</code> in {inst.cwd}</span>

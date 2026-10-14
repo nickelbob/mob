@@ -21,6 +21,7 @@
     if (inst && id !== prevInstanceId && ($sidebarCollapsed || $selectedInCollapsedGroup)) {
       showToast(inst);
     }
+    // eslint-disable-next-line no-useless-assignment -- read on the next reactive run
     prevInstanceId = id;
   }
 </script>

@@ -41,6 +41,7 @@ export type ServerMessage =
   | { type: 'terminal:output'; payload: { instanceId: string; data: string } }
   | { type: 'terminal:scrollback'; payload: { instanceId: string; data: string } }
   | { type: 'terminal:exit'; payload: { instanceId: string; exitCode: number } }
+  | { type: 'terminal:resize-request'; payload: { instanceId: string } }
   | { type: 'error'; payload: { message: string; context?: string } }
   | { type: 'instance:select'; payload: { instanceId: string } }
   | { type: 'update:status'; payload: { status: 'installing' | 'success' | 'failed'; error?: string } }

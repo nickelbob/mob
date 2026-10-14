@@ -3,7 +3,7 @@
   import { sortedInstances, groupedInstances, selectedInstanceId, collapsedGroups, wsClient } from '../lib/stores.js';
 
   $: resumableInstances = $sortedInstances.filter(
-    (i) => i.managed && i.state === 'stopped'
+    (i) => i.state === 'stopped' && (i.managed || !!i.claudeSessionId)
   );
 
   // Show grouped view when 2+ groups exist OR any instance has an explicit project set
@@ -46,7 +46,7 @@
     {#if useGrouped}
       {#each $groupedInstances as group (group.project)}
         <div class="project-group">
-          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions a11y_no_static_element_interactions -->
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
           <div
             class="project-header"
             class:has-selected={$collapsedGroups[group.project] && selectedProject === group.project}

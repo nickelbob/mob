@@ -15,6 +15,12 @@ import { checkForUpdate } from './update-checker.js';
 
 const RESTART_EXIT_CODE = 75;
 
+// Transient filesystem failures: a status file rewritten by the hook, a scanner
+// holding it, a path that vanished mid-read. These arrive as uncaught exceptions
+// from watcher and stat callbacks, and losing the dashboard over one is worse
+// than skipping the operation that failed.
+const RECOVERABLE_FS_CODES = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOENT', 'EMFILE', 'ENFILE']);
+
 const port = parseInt(process.env.MOB_PORT || '', 10) || DEFAULT_PORT;
 const host = process.env.MOB_HOST || '127.0.0.1';
 // When MOB_SUPERVISOR=1, run as a worker that delegates PTY ownership to a
@@ -55,7 +61,9 @@ async function main() {
   const scrollbackBuffer = new ScrollbackBuffer();
   scrollbackBuffer.start();
 
-  sessionStore.pruneExpired();
+  // A live PTY (survived in the supervisor) is never expired — pruning its
+  // file would make loadPreviousSessions treat the PTY as an orphan and kill it.
+  sessionStore.pruneExpired((id) => ptyManager.has(id));
 
   const instanceManager = new InstanceManager(ptyManager, discovery, sessionStore, scrollbackBuffer, settingsManager);
 
@@ -89,7 +97,14 @@ async function main() {
   // Graceful shutdown
   function gracefulShutdown(done: () => void) {
     console.log('\nShutting down...');
-    instanceManager.saveAllAsStopped();
+    // With a supervisor the PTYs outlive this process, so recording every
+    // session as stopped makes the store contradict reality and strands live
+    // Claude processes behind a dashboard that shows them gone.
+    if (useSupervisor) {
+      instanceManager.saveAllForWorkerRestart();
+    } else {
+      instanceManager.saveAllAsStopped();
+    }
 
     // In supervisor mode, PTYs are owned by the supervisor — leave them alive
     // so they survive this worker restart. In single-process mode, kill them.
@@ -113,6 +128,11 @@ async function main() {
   process.on('SIGTERM', () => gracefulShutdown(() => process.exit(0)));
 
   process.on('uncaughtException', (err) => {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code && RECOVERABLE_FS_CODES.has(code)) {
+      console.error(`Recoverable fs error (${code}), continuing:`, err.message);
+      return;
+    }
     console.error('Uncaught exception:', err);
     gracefulShutdown(() => process.exit(1));
   });

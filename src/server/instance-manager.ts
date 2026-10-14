@@ -1,9 +1,9 @@
 import { EventEmitter } from 'events';
-import { PtyManager, findProjectDirForSession, decodeProjectDir, type IPtyManager } from './pty-manager.js';
+import { findProjectDirForSession, decodeProjectDir, type IPtyManager } from './pty-manager.js';
 import { DiscoveryService } from './discovery.js';
 import { SessionStore } from './session-store.js';
 import { ScrollbackBuffer } from './scrollback-buffer.js';
-import type { InstanceInfo, InstanceState, LaunchConflicts, LaunchPayload } from '../shared/protocol.js';
+import type { InstanceInfo, LaunchConflicts, LaunchPayload } from '../shared/protocol.js';
 import type { InstanceStatusFile } from './types.js';
 import type { SettingsManager } from './settings-manager.js';
 import { generateInstanceId } from './util/id.js';
@@ -14,7 +14,7 @@ import { detectStateFromTerminal, hasExplicitIdleMarker } from './terminal-state
 import { reduce, type StateEvent } from './instance-state.js';
 import fs from 'fs';
 import { execFileSync } from 'child_process';
-import { loadProjectConfig, type ProjectConfig } from './project-config.js';
+import { loadProjectConfig } from './project-config.js';
 import { createLogger } from './util/logger.js';
 
 const logger = createLogger('instance-mgr');
@@ -26,6 +26,8 @@ const JIRA_KEY_RE = /([A-Z][A-Z0-9]+-\d+)/;
  * same event delivered twice (the hook script does both); drop it.
  */
 const FILE_UPDATE_DEDUP_MS = 2_000;
+// Seeded status files older than this are treated as ended sessions.
+const FILE_SEED_STALE_MS = 10 * 60_000;
 
 /** Trivial prompts that should not become instance titles. */
 const TRIVIAL_PROMPTS = new Set([
@@ -139,12 +141,15 @@ export class InstanceManager extends EventEmitter {
   }
 
   private loadPreviousSessions(): void {
-    const sessions = this.sessionStore.loadAll();
+    const sessions = this.sessionStore.loadAll((id) => this.ptyManager.has(id));
     const toResume: typeof sessions = [];
     const adopted: typeof sessions = [];
     for (const info of sessions) {
       this.instances.set(info.id, info);
-      this.managedIds.add(info.id);
+      // Reloaded externals must stay out of managedIds: the straggler-hook
+      // guard and the stale-check PTY sweep would otherwise swallow their
+      // live hooks / force them stopped.
+      if (info.managed) this.managedIds.add(info.id);
       this.applyTicketFields(info);
       if (this.ptyManager.has(info.id)) {
         // PTY is still alive (supervisor kept it across our restart) — adopt
@@ -443,7 +448,7 @@ export class InstanceManager extends EventEmitter {
         permissionMode,
         setupCommands: projectConfig?.setup,
       });
-    } catch (err) {
+    } catch {
       this.applyStateEvent(info, { source: 'lifecycle', kind: 'spawn-failed', at: Date.now() });
       this.emit('update', info);
       return info;
@@ -505,7 +510,9 @@ export class InstanceManager extends EventEmitter {
 
   resume(instanceId: string): InstanceInfo | null {
     const old = this.instances.get(instanceId);
-    if (!old || !old.managed) return null;
+    // Externals are resumable too when hooks captured their session id —
+    // resume spawns a fresh managed PTY regardless of origin.
+    if (!old || (!old.managed && !old.claudeSessionId)) return null;
 
     // If the old PTY somehow survived (resume on a not-actually-stopped
     // instance), kill it — otherwise it keeps running orphaned and its hooks
@@ -572,7 +579,7 @@ export class InstanceManager extends EventEmitter {
         claudeSessionId: resumeId,
         resume: true,
       });
-    } catch (err) {
+    } catch {
       this.applyStateEvent(info, { source: 'lifecycle', kind: 'spawn-failed', at: Date.now() });
       this.emit('update', info);
       return info;
@@ -602,8 +609,20 @@ export class InstanceManager extends EventEmitter {
   }
 
   dismiss(instanceId: string): void {
+    // The UI only offers dismiss on stopped cards, but a stale client (or a
+    // card that went live again after the client last rendered it) can still
+    // send one for a running instance. Once the id leaves the instance map the
+    // stale-check stops watching it, so an unkilled PTY here is a leaked
+    // Claude process — kill through kill() so teardown commands run too.
+    if (this.ptyManager.has(instanceId)) {
+      this.log.info(`dismiss: PTY for ${instanceId} still alive — killing it`);
+      this.kill(instanceId);
+    }
     this.instances.delete(instanceId);
     this.managedIds.delete(instanceId);
+    this.autoNameIds.delete(instanceId);
+    this.promptCount.delete(instanceId);
+    this.teardownCommands.delete(instanceId);
     this.subscribers.delete(instanceId);
     this.pendingIdleTicks.delete(instanceId);
     this.lastPostHookAt.delete(instanceId);
@@ -664,6 +683,13 @@ export class InstanceManager extends EventEmitter {
       const lastPost = this.lastPostHookAt.get(data.id);
       if (lastPost && Date.now() - lastPost < FILE_UPDATE_DEDUP_MS) return;
       if (data.lastUpdated && existing?.lastUpdated && existing.lastHookUpdate && data.lastUpdated < existing.lastUpdated) return;
+      // Startup seed of a not-recently-updated file: the session's terminal is
+      // almost certainly gone — surface it as a stopped (resumable) card, not a
+      // ghost that sits on its last live state forever. If the terminal is in
+      // fact still alive, its next hook flips the card back to live.
+      if (data.state !== 'stopped' && Date.now() - data.lastUpdated > FILE_SEED_STALE_MS) {
+        data.state = 'stopped';
+      }
     }
 
     // --- Hook-event state refinement ---
@@ -777,14 +803,21 @@ export class InstanceManager extends EventEmitter {
       };
     }
     this.applyStateEvent(info, { source: 'hook', state: data.state, at: Date.now() });
+    if (info.state !== 'stopped' && info.historical) {
+      // A reloaded historical card whose external terminal turned out to be
+      // alive — it's live again, drop the stale stopped markers.
+      info.historical = false;
+      info.stoppedAt = undefined;
+    }
     info.lastHookEvent = data.hookEvent || existing?.lastHookEvent;
     this.applyTicketFields(info, data.ticket, data.ticketStatus);
     this.instances.set(data.id, info);
     if (source === 'post') this.lastPostHookAt.set(data.id, Date.now());
     this.emit('update', info);
 
-    // Save to session store on meaningful hook updates for managed instances
-    if (this.managedIds.has(data.id) && claudeSessionId) {
+    // Persist whenever we have a resumable session id — external sessions too,
+    // so they survive worker restarts as resumable cards.
+    if (claudeSessionId) {
       this.sessionStore.save(info);
     }
   }
@@ -811,6 +844,21 @@ export class InstanceManager extends EventEmitter {
         this.applyStateEvent(info, { source: 'lifecycle', kind: 'kill', at: now });
         this.sessionStore.save(info, { autoResume: true });
       }
+    }
+  }
+
+  /**
+   * Persist every managed instance with its current state, for a worker
+   * restart where a supervisor keeps the PTYs alive. Unlike
+   * saveAllAsStopped() this submits no kill event, so a session that is still
+   * running is not recorded as stopped and the next worker adopts it as-is.
+   */
+  saveAllForWorkerRestart(): void {
+    this.log.info(`saveAllForWorkerRestart() called — worker restarting, PTYs stay alive`);
+    for (const [id, info] of this.instances) {
+      if (!this.managedIds.has(id)) continue;
+      this.log.info(`preserving state for restart: id=${id} name="${info.name}" state=${info.state}`);
+      this.sessionStore.save(info, { autoResume: true });
     }
   }
 

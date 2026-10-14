@@ -37,6 +37,134 @@ export interface WsServerHandle {
   onUpdateRestart(callback: () => void): void;
 }
 
+export interface OutputSink {
+  readyState: number;
+  bufferedAmount: number;
+  send(data: string): void;
+}
+
+export interface OutputBatcher {
+  push(instanceId: string, data: string): void;
+  /** Cancel the pending timer and send what is buffered to the current subscribers now. */
+  flushNow(instanceId: string): void;
+  drop(instanceId: string): void;
+}
+
+// Backpressure management: batch terminal data per-instance at ~60fps
+const BATCH_INTERVAL_MS = 16;
+// Threshold above which we defer a flush to wait for the client's WS buffer
+// to drain. Lower than the WS library's hard limit so we have headroom.
+const WS_BACKPRESSURE_THRESHOLD = 4 * 1024 * 1024; // 4MB
+// Hard cap on the server-side accumulator. If we exceed this (client truly
+// stuck), we send anyway rather than holding indefinitely. Prefer corruption
+// over OOM at this point.
+const MAX_ACCUMULATED_BYTES = 32 * 1024 * 1024; // 32MB
+
+export function createOutputBatcher(
+  subscribersOf: (instanceId: string) => Set<OutputSink> | undefined,
+): OutputBatcher {
+  const outputBuffers = new Map<string, string>();
+  const batchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /** True if any subscriber is currently backpressured. */
+  function anySubscriberBackpressured(subs: Set<OutputSink>): boolean {
+    for (const client of subs) {
+      if (client.readyState === WebSocket.OPEN && client.bufferedAmount >= WS_BACKPRESSURE_THRESHOLD) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function scheduleFlush(instanceId: string): void {
+    if (batchTimers.has(instanceId)) return;
+    batchTimers.set(instanceId, setTimeout(() => {
+      batchTimers.delete(instanceId);
+      flushOutputBuffer(instanceId, false);
+    }, BATCH_INTERVAL_MS));
+  }
+
+  function cancelFlush(instanceId: string): void {
+    const timer = batchTimers.get(instanceId);
+    if (timer) { clearTimeout(timer); batchTimers.delete(instanceId); }
+  }
+
+  function flushOutputBuffer(instanceId: string, force: boolean): void {
+    const buffered = outputBuffers.get(instanceId);
+    if (!buffered) return;
+
+    const subs = subscribersOf(instanceId);
+    if (!subs || subs.size === 0) {
+      // No subscribers — drop the buffer (no one to send to)
+      outputBuffers.delete(instanceId);
+      return;
+    }
+
+    // If a subscriber is backpressured, defer the flush rather than dropping
+    // bytes. ANSI sequences are stateful; dropping any portion produces
+    // corrupted output. Only force-send if we've accumulated too much.
+    if (
+      !force &&
+      buffered.length < MAX_ACCUMULATED_BYTES &&
+      anySubscriberBackpressured(subs)
+    ) {
+      scheduleFlush(instanceId);
+      return;
+    }
+
+    outputBuffers.delete(instanceId);
+
+    const msg = JSON.stringify({
+      type: 'terminal:output',
+      payload: { instanceId, data: buffered },
+    } satisfies ServerMessage);
+
+    for (const client of subs) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(msg);
+      }
+    }
+  }
+
+  return {
+    push(instanceId, data) {
+      const existing = outputBuffers.get(instanceId) || '';
+      outputBuffers.set(instanceId, existing + data);
+      scheduleFlush(instanceId);
+    },
+    flushNow(instanceId) {
+      cancelFlush(instanceId);
+      flushOutputBuffer(instanceId, true);
+    },
+    drop(instanceId) {
+      outputBuffers.delete(instanceId);
+      cancelFlush(instanceId);
+    },
+  };
+}
+
+// The active viewer of an instance is its most recent subscriber. Subscriber
+// sets keep insertion order, so addViewer moves a re-subscribing socket to the
+// end and the active viewer is always the last element.
+export function activeViewer<T>(subs: Set<T> | undefined): T | undefined {
+  let last: T | undefined;
+  if (subs) for (const s of subs) last = s;
+  return last;
+}
+
+export function addViewer<T>(subs: Set<T>, ws: T): void {
+  subs.delete(ws);
+  subs.add(ws);
+}
+
+/** Removes ws; returns the newly promoted viewer when ws was active and others remain. */
+export function removeViewer<T>(subs: Set<T> | undefined, ws: T): T | undefined {
+  if (!subs || !subs.has(ws)) return undefined;
+  const wasActive = activeViewer(subs) === ws;
+  subs.delete(ws);
+  return wasActive ? activeViewer(subs) : undefined;
+}
+
 export function createWsServer(
   server: Server,
   instanceManager: InstanceManager,
@@ -85,84 +213,23 @@ export function createWsServer(
   instanceManager.on('remove', (id) => {
     log.info( `Instance removed: ${id}`);
     broadcast({ type: 'instance:remove', payload: { instanceId: id } });
-    // Clean up backpressure state
-    outputBuffers.delete(id);
-    const timer = batchTimers.get(id);
-    if (timer) { clearTimeout(timer); batchTimers.delete(id); }
+    batcher.drop(id);
   });
 
-  // Backpressure management: batch terminal data per-instance at ~60fps
-  const BATCH_INTERVAL_MS = 16;
-  // Threshold above which we defer a flush to wait for the client's WS buffer
-  // to drain. Lower than the WS library's hard limit so we have headroom.
-  const WS_BACKPRESSURE_THRESHOLD = 4 * 1024 * 1024; // 4MB
-  // Hard cap on the server-side accumulator. If we exceed this (client truly
-  // stuck), we send anyway rather than holding indefinitely. Prefer corruption
-  // over OOM at this point.
-  const MAX_ACCUMULATED_BYTES = 32 * 1024 * 1024; // 32MB
-  const outputBuffers = new Map<string, string>();
-  const batchTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-  /** True if any subscriber is currently backpressured. */
-  function anySubscriberBackpressured(subs: Set<WebSocket>): boolean {
-    for (const client of subs) {
-      if (client.readyState === WebSocket.OPEN && client.bufferedAmount >= WS_BACKPRESSURE_THRESHOLD) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function scheduleFlush(instanceId: string): void {
-    if (batchTimers.has(instanceId)) return;
-    batchTimers.set(instanceId, setTimeout(() => {
-      batchTimers.delete(instanceId);
-      flushOutputBuffer(instanceId);
-    }, BATCH_INTERVAL_MS));
-  }
-
-  function flushOutputBuffer(instanceId: string): void {
-    const buffered = outputBuffers.get(instanceId);
-    if (!buffered) return;
-
-    const subs = instanceManager.subscribers.get(instanceId);
-    if (!subs || subs.size === 0) {
-      // No subscribers — drop the buffer (no one to send to)
-      outputBuffers.delete(instanceId);
-      return;
-    }
-
-    // If a subscriber is backpressured, defer the flush rather than dropping
-    // bytes. ANSI sequences are stateful; dropping any portion produces
-    // corrupted output. Only force-send if we've accumulated too much.
-    if (
-      buffered.length < MAX_ACCUMULATED_BYTES &&
-      anySubscriberBackpressured(subs)
-    ) {
-      scheduleFlush(instanceId);
-      return;
-    }
-
-    outputBuffers.delete(instanceId);
-
-    const msg = JSON.stringify({
-      type: 'terminal:output',
-      payload: { instanceId, data: buffered },
-    } satisfies ServerMessage);
-
-    for (const client of subs) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(msg);
-      }
-    }
-  }
+  const batcher = createOutputBatcher((id) => instanceManager.subscribers.get(id));
 
   // Forward PTY data to subscribed clients (batched)
   ptyManager.on('data', (instanceId: string, data: string) => {
-    const existing = outputBuffers.get(instanceId) || '';
-    outputBuffers.set(instanceId, existing + data);
-    scheduleFlush(instanceId);
+    batcher.push(instanceId, data);
   });
+
+  function requestResize(instanceId: string, ws: WebSocket): void {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+      type: 'terminal:resize-request',
+      payload: { instanceId },
+    } satisfies ServerMessage));
+  }
 
   instanceManager.on('pty:exit', (instanceId: string, exitCode: number) => {
     log.info( `PTY exit: ${instanceId} code=${exitCode}`);
@@ -310,7 +377,11 @@ export function createWsServer(
               subs = new Set();
               instanceManager.subscribers.set(instanceId, subs);
             }
-            subs.add(ws);
+            // The scrollback already holds any bytes still sitting in the
+            // output batch (it is appended synchronously on PTY data, before
+            // the batch listener runs). Flush that batch to the existing
+            // subscribers first so the new one doesn't get it twice.
+            batcher.flushNow(instanceId);
 
             // Send scrollback history
             const scrollback = instanceManager.getScrollback(instanceId);
@@ -320,12 +391,14 @@ export function createWsServer(
                 payload: { instanceId, data: scrollback },
               } satisfies ServerMessage));
             }
+            addViewer(subs, ws);
             break;
           }
 
           case 'terminal:unsubscribe': {
             const { instanceId } = msg.payload;
-            instanceManager.subscribers.get(instanceId)?.delete(ws);
+            const promoted = removeViewer(instanceManager.subscribers.get(instanceId), ws);
+            if (promoted) requestResize(instanceId, promoted);
             break;
           }
 
@@ -333,13 +406,15 @@ export function createWsServer(
             ptyManager.write(msg.payload.instanceId, msg.payload.data);
             break;
 
-          case 'terminal:resize':
-            ptyManager.resize(
-              msg.payload.instanceId,
-              msg.payload.cols,
-              msg.payload.rows,
-            );
+          case 'terminal:resize': {
+            const { instanceId, cols, rows } = msg.payload;
+            if (activeViewer(instanceManager.subscribers.get(instanceId)) !== ws) {
+              log.info( `Client #${clientId}: ignoring resize of ${instanceId} from non-active viewer`);
+              break;
+            }
+            ptyManager.resize(instanceId, cols, rows);
             break;
+          }
 
           case 'update:check': {
             log.info(`Client #${clientId} requested update check`);
@@ -425,10 +500,11 @@ export function createWsServer(
       }
     });
 
-    ws.on('close', (code, reason) => {
+    ws.on('close', (code, _reason) => {
       log.info( `Client #${clientId} disconnected (code=${code})`);
-      for (const subs of instanceManager.subscribers.values()) {
-        subs.delete(ws);
+      for (const [instanceId, subs] of instanceManager.subscribers) {
+        const promoted = removeViewer(subs, ws);
+        if (promoted) requestResize(instanceId, promoted);
       }
     });
 

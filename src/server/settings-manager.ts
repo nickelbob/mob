@@ -66,7 +66,7 @@ export class SettingsManager {
     } catch (err) {
       log.error('Failed to save settings:', err);
       // Clean up tmp file if rename failed
-      try { fs.unlinkSync(tmpPath); } catch {}
+      try { fs.unlinkSync(tmpPath); } catch { /* ok */ }
     }
   }
 

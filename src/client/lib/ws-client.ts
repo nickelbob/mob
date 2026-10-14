@@ -42,17 +42,17 @@ export class WsClient {
     };
 
     this.ws.onmessage = (event) => {
+      let msg: ServerMessage;
       try {
-        const msg: ServerMessage = JSON.parse(event.data);
-        if (msg.type !== 'terminal:output' && msg.type !== 'terminal:scrollback') {
-          log('info', `← ${msg.type}`, msg.payload);
-        }
-        for (const handler of this.handlers) {
-          handler(msg);
-        }
+        msg = JSON.parse(event.data);
       } catch (e) {
         log('error', 'Failed to parse message:', e, event.data);
+        return;
       }
+      if (msg.type !== 'terminal:output' && msg.type !== 'terminal:scrollback') {
+        log('info', `← ${msg.type}`, msg.payload);
+      }
+      this.dispatch(msg);
     };
 
     this.ws.onclose = (event) => {
@@ -66,6 +66,18 @@ export class WsClient {
       log('error', 'WebSocket error:', event);
       this.ws?.close();
     };
+  }
+
+  private dispatch(msg: ServerMessage): void {
+    let index = 0;
+    for (const handler of this.handlers) {
+      try {
+        handler(msg);
+      } catch (e) {
+        log('error', `Handler #${index} threw on "${msg.type}":`, e);
+      }
+      index++;
+    }
   }
 
   private scheduleReconnect(): void {

@@ -144,26 +144,6 @@ export interface IPtyManager {
   on(event: 'error', listener: (instanceId: string, error: unknown) => void): this;
 }
 
-/**
- * Remove env vars that Claude Code sets for itself and its children. If Mob was
- * launched from inside a Claude Code session, these leak into every spawned PTY
- * and make the nested `claude` think it's a child session (e.g. disabling
- * transcript persistence).
- */
-const CLAUDE_SESSION_ENV_KEYS = [
-  'CLAUDECODE',
-  'CLAUDE_CODE_CHILD_SESSION',
-  'CLAUDE_CODE_ENTRYPOINT',
-  'CLAUDE_CODE_SSE_PORT',
-  'CLAUDE_CODE_SESSION_ID',
-];
-
-function stripClaudeSessionEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = { ...env };
-  for (const key of CLAUDE_SESSION_ENV_KEYS) delete out[key];
-  return out;
-}
-
 export class PtyManager extends EventEmitter implements IPtyManager {
   private ptys = new Map<string, IPty>();
 
@@ -180,6 +160,28 @@ export class PtyManager extends EventEmitter implements IPtyManager {
 
     log.info(`Spawning: shell=${shell} cwd=${resolvedCwd} id=${instanceId}`);
 
+    const env = {
+      ...process.env,
+      MOB_INSTANCE_ID: instanceId,
+      TERM: 'xterm-256color',
+      // Guarantee transcript saving even if an unknown parentage marker slips through.
+      CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: '1',
+    } as Record<string, string>;
+    // When mob itself was launched from inside a Claude Code session (dev server
+    // started by an agent, `mob` run from a Claude bash), the inherited env breaks
+    // spawned sessions: parentage markers make claude think it's a nested child
+    // session (disables transcript saving), NO_COLOR kills all syntax highlighting,
+    // and GIT_TERMINAL_PROMPT=0 breaks interactive git auth. Mob sessions are
+    // always first-class interactive terminals: strip the whole set.
+    delete env.CLAUDECODE;
+    delete env.CLAUDE_CODE_CHILD_SESSION;
+    delete env.CLAUDE_CODE_ENTRYPOINT;
+    delete env.CLAUDE_CODE_SSE_PORT;
+    delete env.CLAUDE_CODE_SESSION_ID;
+    delete env.CLAUDE_PID;
+    delete env.NO_COLOR;
+    delete env.GIT_TERMINAL_PROMPT;
+
     let p: IPty;
     try {
       p = pty.spawn(shell, args, {
@@ -187,11 +189,7 @@ export class PtyManager extends EventEmitter implements IPtyManager {
         cols: 120,
         rows: 30,
         cwd: resolvedCwd,
-        env: {
-          ...stripClaudeSessionEnv(process.env),
-          MOB_INSTANCE_ID: instanceId,
-          TERM: 'xterm-256color',
-        } as Record<string, string>,
+        env,
       });
     } catch (err) {
       log.error(`Failed to spawn PTY:`, err);

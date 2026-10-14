@@ -2,6 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { Terminal } from 'xterm';
   import { FitAddon } from 'xterm-addon-fit';
+  import { Unicode11Addon } from 'xterm-addon-unicode11';
   import { selectedInstance, selectedInstanceId, wsClient, wsConnected, onInstanceRemove, settings } from '../lib/stores.js';
   import { matchesShortcut } from '../lib/shortcuts.js';
   import type { InstanceInfo } from '../lib/types.js';
@@ -12,6 +13,7 @@
   let currentSubscription: string | null = null;
   let unsubMessage: (() => void) | null = null;
   let resizeObserver: ResizeObserver | null = null;
+  let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   let resizeHandler: (() => void) | null = null;
   let inputDisposable: { dispose(): void } | null = null;
   let scrollDisposable: { dispose(): void } | null = null;
@@ -21,7 +23,17 @@
   import { get } from 'svelte/store';
 
   // Cache terminals per instance (with LRU cap)
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- deliberately non-reactive
   const terminalCache = new Map<string, { terminal: Terminal; fitAddon: FitAddon }>();
+
+  // SGR reset + home + erase display + erase scrollback. Unlike Terminal.clear()
+  // this leaves row 1 empty (clear() keeps the cursor line, i.e. Claude's
+  // prompt row) and unlike reset() it keeps alt-screen/mouse/bracketed-paste
+  // modes, which the PTY still believes are active. The SGR reset is safe: the
+  // replayed tail starts at an arbitrary chunk boundary, so the attribute
+  // state before it is unknown either way, and the tail itself restores the
+  // PTY's current attributes by the time it ends.
+  const ERASE_SCREEN = '\x1b[m\x1b[H\x1b[2J\x1b[3J';
 
   // Track whether the active terminal is scrolled to bottom (default true)
   let isAtBottom = true;
@@ -91,10 +103,13 @@
           brightWhite: '#f0f6fc',
         },
         scrollback: termSettings.scrollbackLines,
-        convertEol: true,
       });
       const f = new FitAddon();
       t.loadAddon(f);
+      // conhost/ConPTY lays out emoji as 2 cells; xterm's default Unicode 6
+      // tables make them 1, shifting every column after one
+      t.loadAddon(new Unicode11Addon());
+      t.unicode.activeVersion = '11';
       cached = { terminal: t, fitAddon: f };
       terminalCache.set(instanceId, cached);
       evictOldestTerminal();
@@ -104,6 +119,132 @@
 
   let isStopped = false;
 
+  // Claude's TUI enables mouse reporting (?1000/1002/1003h), which makes xterm
+  // forward drags to the PTY instead of selecting — and xterm 5.x can't *start*
+  // a selection via shift+drag either (incremental-click needs an existing
+  // selection). So when mouse reporting is on, take over plain left-drags and
+  // drive the selection API ourselves; plain clicks are replayed to xterm so
+  // the TUI still gets them (permission prompts, menus).
+  const selectionFixApplied = new WeakSet<Terminal>();
+
+  function cellFromMouseEvent(t: Terminal, e: MouseEvent): { col: number; row: number } | null {
+    const screen = t.element?.querySelector('.xterm-screen');
+    if (!screen) return null;
+    const r = screen.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return null;
+    const col = Math.max(0, Math.min(t.cols - 1, Math.floor(((e.clientX - r.left) / r.width) * t.cols)));
+    const viewRow = Math.max(0, Math.min(t.rows - 1, Math.floor(((e.clientY - r.top) / r.height) * t.rows)));
+    const buf = t.buffer.active;
+    return { col, row: Math.min(buf.viewportY + viewRow, buf.length - 1) };
+  }
+
+  function selectWordAt(t: Terminal, cell: { col: number; row: number }) {
+    const line = t.buffer.active.getLine(cell.row);
+    if (!line) return;
+    const text = line.translateToString();
+    const isWord = (ch: string | undefined) => !!ch && !' \t()[]{}\'"`,;|'.includes(ch);
+    if (!isWord(text[cell.col])) return;
+    let start = cell.col;
+    let end = cell.col;
+    while (start > 0 && isWord(text[start - 1])) start--;
+    while (end < text.length - 1 && isWord(text[end + 1])) end++;
+    t.select(start, cell.row, end - start + 1);
+  }
+
+  function forceLocalSelection(t: Terminal) {
+    if (!t.element || selectionFixApplied.has(t)) return;
+    selectionFixApplied.add(t);
+    // A replayed click makes Claude's TUI repaint, and that repaint clears any
+    // selection made right after — so hold single-click replays briefly and
+    // drop them when a second click follows (the user is selecting, not
+    // clicking the TUI).
+    let pendingClick: { replay: () => void; timer: ReturnType<typeof setTimeout> } | null = null;
+
+    // xterm clears its selection whenever it sends anything to the PTY, and
+    // with any-motion tracking (?1003h) merely moving the mouse emits a
+    // report — which would wipe the selection the instant the user moves
+    // after releasing. Swallow motion/release events while a selection exists.
+    for (const type of ['mousemove', 'mouseup'] as const) {
+      t.element.addEventListener(type, (e: MouseEvent) => {
+        if ((e as any).__mobForwarded) return;
+        if (t.modes.mouseTrackingMode === 'none') return;
+        if (t.hasSelection()) e.stopImmediatePropagation();
+      }, true);
+    }
+
+    t.element.addEventListener('mousedown', (e: MouseEvent) => {
+      if ((e as any).__mobForwarded) return;
+      // Without mouse reporting, xterm's native selection already works
+      if (t.modes.mouseTrackingMode === 'none') return;
+      if (e.button !== 0 || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+      const anchor = cellFromMouseEvent(t, e);
+      if (!anchor) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+
+      if (pendingClick) {
+        clearTimeout(pendingClick.timer);
+        const flush = e.detail === 1 ? pendingClick.replay : null;
+        pendingClick = null;
+        flush?.();
+      }
+
+      if (e.detail === 2) {
+        selectWordAt(t, anchor);
+        t.focus();
+        return;
+      }
+      if (e.detail >= 3) {
+        t.selectLines(anchor.row, anchor.row);
+        t.focus();
+        return;
+      }
+
+      let dragging = false;
+      const applyDrag = (me: MouseEvent) => {
+        const cur = cellFromMouseEvent(t, me);
+        if (!cur) return;
+        const [a, b] =
+          cur.row < anchor.row || (cur.row === anchor.row && cur.col < anchor.col)
+            ? [cur, anchor]
+            : [anchor, cur];
+        const length = (b.row - a.row) * t.cols + (b.col - a.col);
+        if (length > 0) t.select(a.col, a.row, length);
+        else t.clearSelection();
+      };
+      const onMove = (me: MouseEvent) => {
+        me.stopImmediatePropagation();
+        if (!dragging && Math.abs(me.clientX - e.clientX) < 4 && Math.abs(me.clientY - e.clientY) < 4) return;
+        dragging = true;
+        applyDrag(me);
+      };
+      const onUp = (ue: MouseEvent) => {
+        ue.stopImmediatePropagation();
+        document.removeEventListener('mousemove', onMove, true);
+        document.removeEventListener('mouseup', onUp, true);
+        if (dragging) {
+          applyDrag(ue);
+        } else {
+          // Plain click: replay it (after the multi-click window) so the TUI
+          // still receives mouse clicks
+          t.clearSelection();
+          const replay = () => {
+            pendingClick = null;
+            for (const [type, src] of [['mousedown', e], ['mouseup', ue]] as const) {
+              const clone = new MouseEvent(type, src);
+              (clone as any).__mobForwarded = true;
+              e.target?.dispatchEvent(clone);
+            }
+          };
+          pendingClick = { replay, timer: setTimeout(replay, 300) };
+        }
+        t.focus();
+      };
+      document.addEventListener('mousemove', onMove, true);
+      document.addEventListener('mouseup', onUp, true);
+    }, true);
+  }
+
   function attachTerminal(inst: InstanceInfo | null) {
     // Unsubscribe from previous
     if (currentSubscription) {
@@ -111,6 +252,7 @@
       if (terminal) {
         terminal.element?.remove();
       }
+      // eslint-disable-next-line svelte/infinite-reactive-loop -- caller re-checks at execution time
       currentSubscription = null;
     }
     // Dispose previous input listener to prevent duplicate keystrokes
@@ -136,20 +278,24 @@
     terminal = cached.terminal;
     fitAddon = cached.fitAddon;
 
-    // Clear container and attach
+    // Clear container and attach — the container div exists only for xterm
+    // eslint-disable-next-line svelte/no-dom-manipulating
     terminalEl.innerHTML = '';
     if (!terminal.element) {
       terminal.open(terminalEl);
     } else {
+      // eslint-disable-next-line svelte/no-dom-manipulating
       terminalEl.appendChild(terminal.element);
     }
 
     fitAddon.fit();
     terminal.scrollToBottom();
     terminal.focus();
+    forceLocalSelection(terminal);
 
     // Subscribe to output (also triggers scrollback for stopped instances)
     wsClient.send({ type: 'terminal:subscribe', payload: { instanceId: inst.id } });
+    // eslint-disable-next-line svelte/infinite-reactive-loop -- caller re-checks at execution time
     currentSubscription = inst.id;
 
     if (!isStopped) {
@@ -172,7 +318,12 @@
         }
       }
       if (e.ctrlKey && e.key === 'c' && terminal!.hasSelection()) {
-        navigator.clipboard.writeText(terminal!.getSelection());
+        if (e.type === 'keydown') {
+          navigator.clipboard.writeText(terminal!.getSelection());
+          // Match Windows Terminal: copy clears the selection, so a second
+          // Ctrl+C sends an interrupt
+          terminal!.clearSelection();
+        }
         return false;
       }
       if (e.ctrlKey && e.key === 'v') {
@@ -220,36 +371,29 @@
           isAtBottom = false;
         }
       }
-      if (msg.type === 'terminal:scrollback' && msg.payload.instanceId === currentSubscription) {
-        // Clear before writing scrollback so we don't overlay onto existing
-        // content in a cached terminal. Use clear() (not reset()) — reset()
-        // would wipe terminal modes like alt-screen and bracketed paste,
-        // but the PTY/Claude doesn't know we reset, so future output would
-        // land in the wrong mode and produce corrupted formatting.
-        terminal?.clear();
-        terminal?.write(msg.payload.data);
+      if (msg.type === 'terminal:scrollback' && msg.payload.instanceId === currentSubscription && terminal) {
+        // One write keeps the erase ahead of the replay in xterm's write queue
+        terminal.write(ERASE_SCREEN + msg.payload.data);
         scrollToBottomIfNeeded();
+      }
+      // Server promoted this tab to active viewer (the previous one left);
+      // re-send our size so the PTY isn't stuck at the departed tab's.
+      if (msg.type === 'terminal:resize-request' && msg.payload.instanceId === currentSubscription && terminal && fitAddon && !isStopped) {
+        fitAddon.fit();
+        wsClient.send({
+          type: 'terminal:resize',
+          payload: { instanceId: currentSubscription, cols: terminal.cols, rows: terminal.rows },
+        });
       }
     });
 
-    let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
     resizeObserver = new ResizeObserver(() => {
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       resizeDebounceTimer = setTimeout(() => {
         resizeDebounceTimer = null;
-        if (fitAddon && terminal) {
-          fitAddon.fit();
-          scrollToBottomIfNeeded();
-          if (currentSubscription) {
-            wsClient.send({
-              type: 'terminal:resize',
-              payload: { instanceId: currentSubscription, cols: terminal.cols, rows: terminal.rows },
-            });
-          }
-        }
+        fitAndSync('observer');
       }, 50);
     });
-    if (terminalEl) resizeObserver.observe(terminalEl);
 
     // Clean up terminal cache when instances are removed
     unsubRemove = onInstanceRemove((instanceId) => {
@@ -257,31 +401,64 @@
     });
 
     // Re-fit terminal when window moves between displays with different DPI
-    resizeHandler = () => {
-      if (fitAddon && terminal) {
-        fitAddon.fit();
-        scrollToBottomIfNeeded();
-        if (currentSubscription) {
-          wsClient.send({
-            type: 'terminal:resize',
-            payload: { instanceId: currentSubscription, cols: terminal.cols, rows: terminal.rows },
-          });
-        }
-      }
-    };
+    resizeHandler = () => fitAndSync('window');
     window.addEventListener('resize', resizeHandler);
   });
 
   onDestroy(() => {
     unsubMessage?.();
     unsubRemove?.();
+    inputDisposable?.dispose();
     scrollDisposable?.dispose();
+    if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
     resizeObserver?.disconnect();
     if (resizeHandler) window.removeEventListener('resize', resizeHandler);
     if (currentSubscription) {
       wsClient.send({ type: 'terminal:unsubscribe', payload: { instanceId: currentSubscription } });
     }
+    for (const cached of terminalCache.values()) {
+      cached.terminal.dispose();
+    }
+    terminalCache.clear();
+    terminal = null;
+    fitAddon = null;
   });
+
+  // Observe whichever container div is currently rendered: the {#if} blocks
+  // recreate it, and it may not exist yet at mount (snapshot not arrived)
+  $: if (resizeObserver) {
+    resizeObserver.disconnect();
+    if (terminalEl) resizeObserver.observe(terminalEl);
+  }
+
+  // Only tell the PTY about a resize when fit() actually changed the grid;
+  // ConPTY repaints the whole viewport on every resize it receives
+  function fitAndSync(source: 'observer' | 'window' | 'settings') {
+    if (!fitAddon || !terminal) return;
+    const prevCols = terminal.cols;
+    const prevRows = terminal.rows;
+    fitAddon.fit();
+    scrollToBottomIfNeeded();
+    if (import.meta.env.DEV && source === 'observer') {
+      const panel = terminalEl?.parentElement;
+      console.debug('[terminal] observer fit', {
+        rows: `${prevRows}->${terminal.rows}`,
+        cols: `${prevCols}->${terminal.cols}`,
+        containerHeight: terminalEl?.getBoundingClientRect().height,
+        innerHeight: window.innerHeight,
+        panelChildren: Array.from(panel?.children ?? []).map(
+          (c) => `${c.className}:${(c as HTMLElement).offsetHeight}`,
+        ),
+      });
+    }
+    if (terminal.cols === prevCols && terminal.rows === prevRows) return;
+    if (currentSubscription && !isStopped) {
+      wsClient.send({
+        type: 'terminal:resize',
+        payload: { instanceId: currentSubscription, cols: terminal.cols, rows: terminal.rows },
+      });
+    }
+  }
 
   // React to ID changes. Also react to instance managed/state becoming available
   // (e.g. snapshot arrives after ID was already set).
@@ -298,6 +475,7 @@
     if (id !== currentSubscription) {
       tick().then(() => {
         if (get(selectedInstanceId) !== currentSubscription) {
+          // eslint-disable-next-line svelte/infinite-reactive-loop -- guarded by the re-checks above
           attachTerminal(get(selectedInstance));
         }
       });
@@ -322,15 +500,8 @@
         cached.terminal.options.cursorStyle = cursorStyle;
       }
     }
-    if (changed && terminal && fitAddon && terminal.element?.isConnected) {
-      fitAddon.fit();
-      scrollToBottomIfNeeded();
-      if (currentSubscription && !isStopped) {
-        wsClient.send({
-          type: 'terminal:resize',
-          payload: { instanceId: currentSubscription, cols: terminal.cols, rows: terminal.rows },
-        });
-      }
+    if (changed && terminal?.element?.isConnected) {
+      fitAndSync('settings');
     }
   }
 
@@ -338,12 +509,10 @@
   $: {
     const connected = $wsConnected;
     if (connected && !prevConnected && currentSubscription) {
-      // Clear terminal before replaying scrollback to avoid doubled/corrupted output
-      if (terminal) {
-        terminal.clear();
-      }
+      // The terminal:scrollback reply erases the screen before replaying
       wsClient.send({ type: 'terminal:subscribe', payload: { instanceId: currentSubscription } });
     }
+    // eslint-disable-next-line no-useless-assignment -- read on the next reactive run
     prevConnected = connected;
   }
 </script>
@@ -449,18 +618,31 @@
     -webkit-box-orient: vertical;
   }
 
-  .waiting-banner {
-    padding: 6px 12px;
-    background: rgba(210, 153, 34, 0.15);
-    border-bottom: 1px solid rgba(210, 153, 34, 0.3);
-    color: var(--yellow);
+  /* Overlays, not flex siblings: panel chrome must never change the terminal row count */
+  .waiting-banner,
+  .stopped-banner,
+  .launching-banner {
+    position: absolute;
+    top: 8px;
+    left: 16px;
+    z-index: 10;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
     font-size: 12px;
-    text-align: center;
     font-weight: 600;
+    white-space: nowrap;
     display: flex;
     align-items: center;
-    justify-content: center;
     gap: 8px;
+    pointer-events: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+
+  .waiting-banner {
+    background: linear-gradient(rgba(210, 153, 34, 0.15), rgba(210, 153, 34, 0.15)), var(--bg-secondary);
+    border-color: rgba(210, 153, 34, 0.3);
+    color: var(--yellow);
   }
 
   .pulse-dot {
@@ -477,27 +659,13 @@
   }
 
   .stopped-banner {
-    padding: 6px 12px;
-    background: rgba(139, 148, 158, 0.15);
-    border-bottom: 1px solid var(--border);
+    background: linear-gradient(rgba(139, 148, 158, 0.15), rgba(139, 148, 158, 0.15)), var(--bg-secondary);
     color: var(--text-muted);
-    font-size: 12px;
-    text-align: center;
-    font-weight: 600;
   }
 
   .launching-banner {
-    padding: 6px 12px;
-    background: rgba(210, 153, 34, 0.1);
-    border-bottom: 1px solid var(--border);
+    background: linear-gradient(rgba(210, 153, 34, 0.1), rgba(210, 153, 34, 0.1)), var(--bg-secondary);
     color: var(--yellow);
-    font-size: 12px;
-    text-align: center;
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
   }
 
   .spinner {

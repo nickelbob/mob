@@ -1,6 +1,7 @@
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import svelte from 'eslint-plugin-svelte';
+import globals from 'globals';
 
 export default [
   js.configs.recommended,
@@ -12,6 +13,18 @@ export default [
       parserOptions: {
         parser: tseslint.parser,
       },
+    },
+  },
+  {
+    files: ['src/client/**', '**/*.svelte'],
+    languageOptions: {
+      globals: globals.browser,
+    },
+  },
+  {
+    files: ['src/server/**', 'src/shared/**', 'scripts/**'],
+    languageOptions: {
+      globals: globals.node,
     },
   },
   {

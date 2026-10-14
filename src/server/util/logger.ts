@@ -16,7 +16,7 @@ function appendToFile(line: string) {
       logStream.on('error', () => { logStream = null; });
     }
     logStream.write(line + '\n');
-  } catch {}
+  } catch { /* logging must never throw */ }
 }
 
 // warn/error stay synchronous: they're rare (not a hot-path cost) and are
@@ -25,7 +25,7 @@ function appendToFile(line: string) {
 function appendToFileSync(line: string) {
   try {
     fs.appendFileSync(logFile, line + '\n');
-  } catch {}
+  } catch { /* logging must never throw */ }
 }
 
 export function createLogger(module: string) {

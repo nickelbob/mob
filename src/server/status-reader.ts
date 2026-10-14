@@ -3,7 +3,9 @@ import type { InstanceStatusFile } from './types.js';
 
 export function readStatusFile(filePath: string): InstanceStatusFile | null {
   try {
-    const raw = fs.readFileSync(filePath, 'utf-8');
+    // Windows PowerShell 5.1's Out-File -Encoding UTF8 emits a BOM, which
+    // bare JSON.parse rejects — strip it or the whole file-watch seed is dead.
+    const raw = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
     const data = JSON.parse(raw);
     if (!data.id || !data.cwd || !data.lastUpdated) {
       return null;
